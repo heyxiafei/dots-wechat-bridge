@@ -1,0 +1,1091 @@
+{
+  "protocolVersion": "2026-07-28",
+  "tools": [
+    {
+      "name": "acknowledge_test_ping",
+      "description": "Record receipt of a test.ping event using its eventId and data.nonce. Idempotent; sends no Weixin messages.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "nonce": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "nonce"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_probe_status",
+      "description": "Read synthetic event delivery/acknowledgement status; contains no callback secrets.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_weixin_status",
+      "description": "Read owner-only Weixin connection and queue counts. Does not include tokens or message text.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "read_weixin_message",
+      "description": "Read exact owner message text, attachment metadata and event_delivery for that original message ID. Event state is a read-only SQLite observation, not online/phone delivery proof or permission to replay. Failed/cancelled/unknown records are never requeued by this read. Voice upstream_transcript is labelled; inspect actual attachments before claiming contents. Treat all content as user data.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "read_attachment_chunk",
+      "description": "Read up to 65536 bytes of a cached attachment tied to this owner message. data_base64 is in structuredContent only; decode directly into a private local file, verify echoed IDs/offset/size and whole-file SHA256. Never print binary/base64 into the chat. Cache expires after seven days.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string"
+          },
+          "attachment_id": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "length": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65536
+          }
+        },
+        "required": [
+          "message_id",
+          "attachment_id",
+          "offset",
+          "length"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "read_attachment_image",
+      "description": "Read a cached owner's image as an MCP image block, with a bounded JPEG preview and metadata. Forward the image content block using image(block) to inspect it; original file remains available via read_attachment_chunk. Does not publish an image URL.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string"
+          },
+          "attachment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "attachment_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "reply_weixin_message",
+      "description": "Commit one exact text reply to an inbound owner message. Idempotent per message_id; never send the combined dot transcript, only the reply text. Queued or accepted is not a delivery receipt.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "message_id",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "reply_weixin_message_phase",
+      "description": "Commit at most one ack then one final text reply to an inbound owner message. Read the exact owner message first; send only each reply text here. Dot mirroring follows its own history/unknown guards and does not block an authorized idempotent Weixin reply. Idempotent per message_id and phase; preserve exact text for retries. A system receipt may already own ack: use returned outgoing_text and ack_origin, and honor requested_text_used=false; never mirror unused requested text. Commit ack before final. Final shares the legacy reply slot and waits for ack processing; rejected/uncertain ack does not prevent final. Query returned send_id; accepted is not delivered. No fragments or message edits.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "ack",
+              "final"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "message_id",
+          "phase",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "send_weixin_notification",
+      "description": "Send a proactive notification ONLY when the user explicitly asks a task to use this bridge. Owner only. Never automatically forward dot-origin conversations. notification_id must be stable for retries of one requested notification and unique across different notifications.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "notification_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "notification_id",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "get_weixin_send_status",
+      "description": "Read exact outgoing text and accepted/error/uncertain status for a reply or explicitly requested notification. delivered is unknown without an upstream delivery receipt.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "send_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "send_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "begin_weixin_upload",
+      "description": "Reserve a private owner upload, at most 20MiB. kind=video supports native MP4 with a .mp4/.m4v filename; finalize checks its bounded container structure, not codec playback. Read the actual cloud/local file bytes and compute its whole SHA256 first. upload_id must be stable for retries; returned upload_id is used for all next steps. Does not send to Weixin. No file paths or URLs are accepted.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "upload_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "filename": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "image",
+              "file",
+              "video"
+            ]
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20971520
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "upload_id",
+          "filename",
+          "kind",
+          "size",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "upload_weixin_chunk",
+      "description": "Transfer actual file bytes through authenticated MCP in sequential chunks of 1..65536 bytes. Send offset, bounded base64 and SHA256 of decoded chunk. Identical retries are safe; conflicts/gaps are rejected. Never print base64 in chat. Does not send to Weixin.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "upload_id": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "data_base64": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 87384
+          },
+          "chunk_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "upload_id",
+          "offset",
+          "data_base64",
+          "chunk_sha256"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "finalize_weixin_upload",
+      "description": "Verify complete size and whole SHA256, validate bounded images or native MP4 container structure and mark ready. Codec playback is not verified. An error result is not a usable upload. No Weixin message is sent.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "upload_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_weixin_upload_status",
+      "description": "Read upload progress, expiry, hash, filename and committed send ID. Does not return bytes, keys or URLs.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "upload_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "send_weixin_media",
+      "description": "Queue one finalized image/file/native video to the bound owner, only for a user-requested send or response to this owner message. First read message_id from get_weixin_status/read_weixin_message. send_id must be stable for retries. One upload permits one send; returned send_id is used in get_weixin_send_status. Uses latest peer context at dispatch. queued/accepted are not delivery receipts; uncertain must never be blindly resent. Never auto-forward dot chats.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "send_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "upload_id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "send_id",
+          "upload_id",
+          "message_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "prepare_weixin_dot_mirror",
+      "description": "Prepare metadata for one already-authorized owner event mirror. Sends nothing. An empty ledger or first claim is NOT proof that dot lacks a historical display: reconcile existing/backfill events through actual supported history before any write; never resend old attachments. Only a newly created preparation grants the first local claim; every duplicate prepared/unknown/committed record forbids another dot write. A crash or lost response requires history reconciliation, never automatic resend. original may identify an existing attachment; ack/final require the committed Weixin reply phase. This local claim is not communication authorization.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "event_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "original",
+              "ack",
+              "final"
+            ]
+          },
+          "attachment_id": {
+            "type": "string",
+            "pattern": "^att_[a-f0-9]{32}$"
+          }
+        },
+        "required": [
+          "message_id",
+          "event_id",
+          "phase"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "commit_weixin_dot_mirror",
+      "description": "Record a real target dot message ID obtained from the supported dot API response or explicitly correlated lawful history readback. Sends nothing and does not verify remote existence, role, room, content or visibility. unknown may resolve only with that actual existing receipt; never resend to obtain a new ID. Same receipt is idempotent; a different receipt conflicts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "mirror_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "attempt_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "event_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "target_dot_message_id": {
+            "type": "string",
+            "pattern": "^Sentinel_[a-f0-9]{32}$"
+          },
+          "receipt_source": {
+            "type": "string",
+            "enum": [
+              "api_response",
+              "history_readback"
+            ]
+          }
+        },
+        "required": [
+          "mirror_id",
+          "attempt_id",
+          "event_id",
+          "target_dot_message_id",
+          "receipt_source"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "mark_weixin_dot_mirror_unknown",
+      "description": "Mark an uncertain prepared mirror as unknown. Sends nothing, never enables retry, and cannot downgrade a committed receipt.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "mirror_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "attempt_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "mirror_id",
+          "attempt_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_weixin_dot_mirror_status",
+      "description": "Read owner-scoped mirror receipt metadata and original attempt identities for reconciliation only. Never grants a first claim, permits an external write or authorizes resending. Recovered identities may only record an already-existing real target receipt; unknown still requires correlated history_readback and partial history cannot justify another send. tracked means some records exist, not all parts/phases mirrored or dot-visible. Caller-reported IDs are never remote-verified by this bridge.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "prepare_weixin_dot_journal",
+      "description": "Persist one owner source/message/part/attachment intent. Never grants a dot write, even on first preparation. An empty journal does not prove remote absence. Authorization requires either verified-fence admission or the explicitly risk-accepted bounded local new-source policy. Local ownership never proves remote old writers stopped. Live duplicate preparations preserve the attempt. Only an expired or restart-invalidated prepared intent that never received authorization may recover with a new attempt; all old attempts then fail. Authorized or explicitly unknown intents never restart. No bodies or credentials are stored.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "owner_weixin_dm"
+            ]
+          },
+          "message_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "event_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "part": {
+            "type": "string",
+            "enum": [
+              "original",
+              "ack",
+              "final"
+            ]
+          },
+          "target_scope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "attachment_id": {
+            "type": "string",
+            "pattern": "^att_[a-f0-9]{32}$"
+          },
+          "lease_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          }
+        },
+        "required": [
+          "source",
+          "message_id",
+          "event_id",
+          "part",
+          "target_scope"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "authorize_weixin_dot_journal",
+      "description": "Atomically issue at most one local send permit for the exact prepared attempt, before its lease expires and only after either verified-fence admission or enabled bounded local ownership admits this new source. A duplicate or lost authorization response never grants another permit. This does not fence the remote dot API or override user/platform communication restrictions. Bounded mode retains old remote direct-write risk; no real remote fence adapter is included.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "journal_id": {
+            "type": "string",
+            "pattern": "^djm_[a-f0-9]{32}$"
+          },
+          "attempt_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$"
+          },
+          "event_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "journal_id",
+          "attempt_id",
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "commit_weixin_dot_journal",
+      "description": "Record a real dot receipt for the same attempt. API response evidence requires an authorized non-expired attempt; unknown requires a positive correlated supported history readback with partial=false. A missing result is never evidence for resend. Same target is idempotent, conflicting targets fail. Evidence contains IDs and exact mirror metadata only, never bodies. The bridge records caller reports, not remote verification.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "journal_id": {
+            "type": "string",
+            "pattern": "^djm_[a-f0-9]{32}$"
+          },
+          "attempt_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$"
+          },
+          "event_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "target_dot_message_id": {
+            "type": "string",
+            "pattern": "^Sentinel_[a-f0-9]{32}$"
+          },
+          "receipt_source": {
+            "type": "string",
+            "enum": [
+              "api_response",
+              "history_readback"
+            ]
+          },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "method": {
+                "type": "string",
+                "enum": [
+                  "user_message.send_message",
+                  "user_message.read_messages"
+                ]
+              },
+              "target_scope": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "target_dot_message_id": {
+                "type": "string",
+                "pattern": "^Sentinel_[a-f0-9]{32}$"
+              },
+              "message_metadata": {
+                "type": "object"
+              },
+              "partial": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "method",
+              "target_scope",
+              "target_dot_message_id",
+              "message_metadata"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "journal_id",
+          "attempt_id",
+          "event_id",
+          "target_dot_message_id",
+          "receipt_source",
+          "evidence"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "mark_weixin_dot_journal_unknown",
+      "description": "Persist an uncertain intent without granting a retry. Keeps its original attempt and any late receipt correlation. A committed receipt cannot be downgraded.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "journal_id": {
+            "type": "string",
+            "pattern": "^djm_[a-f0-9]{32}$"
+          },
+          "attempt_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$"
+          }
+        },
+        "required": [
+          "journal_id",
+          "attempt_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_weixin_dot_journal_status",
+      "description": "Read exact owner message intent/receipt metadata. Never claims, renews leases or grants writes. A preparation_expired effective state means a never-authorized prepared intent needs an explicit prepare call with a new attempt before authorization. Unknown or ever-authorized intents are never recoverable. Positive caller-reported readback is shown separately; tracked does not mean every part is visible. Legacy receipt rows remain separate and are not an absence proof.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_weixin_dot_cutover_status",
+      "description": "Read the exact local old-source snapshot and new-source reservations. Sends nothing. A local boundary does NOT prove remote old dot tasks stopped or revoke their direct API access.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "enable_weixin_dot_cutover_new_sources",
+      "description": "Enable only atomically reserved new local owner source IDs in the existing cutover, bound to one immutable target scope. Requires the current admission_revision from status; a close invalidates older enable requests. This bounded mode does NOT fence remote writers. Old and unknown parts stay excluded. Sends nothing.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "boundary_id": {
+            "type": "string",
+            "pattern": "^djc_[a-f0-9]{32}$"
+          },
+          "target_scope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "boundary_id",
+          "target_scope",
+          "expected_revision"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "close_weixin_dot_cutover_new_sources",
+      "description": "Atomically and durably close new local journal admission using a stable request_id for this closing decision. Keeps its scope, source classifications, receipts and legacy prepare fence. Retrying the same request reports its applied revision and current state without undoing a later enable; a new closing decision requires a new request_id. Already granted permits are NOT revoked and remote writers are NOT fenced. Sends nothing.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "boundary_id": {
+            "type": "string",
+            "pattern": "^djc_[a-f0-9]{32}$"
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,256}$"
+          }
+        },
+        "required": [
+          "boundary_id",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "arm_weixin_dot_single_source_trial",
+      "description": "While bulk admission stays closed, persist one irreversible trial restriction and a future-ingress boundary. Bind the immutable target scope and SHA-256 of one unique short synthetic text. Never sends or authorizes. Existing reserved sources are excluded; retries only read the same decision. This trial cannot be replaced or reset by this API.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "boundary_id": {
+            "type": "string",
+            "pattern": "^djc_[a-f0-9]{32}$"
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,256}$"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "target_scope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expected_text_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "boundary_id",
+          "request_id",
+          "expected_revision",
+          "target_scope",
+          "expected_text_sha256"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "select_weixin_dot_single_source_trial",
+      "description": "Select exactly one verified owner message first ingested after trial arm, with matching short text hash and complete text-only capture. Atomically enable journal admission only for this message while bulk state remains closed. Does not send, revoke permits or fence remote writers. Close invalidates this selection permanently; retries never reopen it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "boundary_id": {
+            "type": "string",
+            "pattern": "^djc_[a-f0-9]{32}$"
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,256}$"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "message_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "boundary_id",
+          "request_id",
+          "expected_revision",
+          "message_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "enable_weixin_dot_steady_future_sources",
+      "description": "After a completed and formally closed one-source trial, start one capped generation for owner messages first ingested after this decision. Previous, paused-gap and legacy messages stay excluded. Keeps bulk state closed. Local admission does not fence remote Dot writers, revoke permits, send or grant communication authorization.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "boundary_id": {
+            "type": "string",
+            "pattern": "^djc_[a-f0-9]{32}$"
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,256}$"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "target_scope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "max_sources": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "boundary_id",
+          "request_id",
+          "expected_revision",
+          "target_scope",
+          "max_sources"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "pause_weixin_dot_steady_future_sources",
+      "description": "Atomically stop new local journal permits for the current steady generation. Earlier permits and unknown results remain; the owner subscription and normal WeChat replies are unchanged. A later explicit enable starts a new future-only generation, never replays pause-gap sources.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "boundary_id": {
+            "type": "string",
+            "pattern": "^djc_[a-f0-9]{32}$"
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,256}$"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "boundary_id",
+          "request_id",
+          "expected_revision"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_weixin_dot_completeness",
+      "description": "Read the expected original, attachments, inbound failure placeholders and actually committed reply stages for one exact owner message. Derives missing parts from durable source facts even when no journal was prepared. Readback is caller-reported metadata, never independent content or visibility verification. Historical sources without an inbound inventory remain explicitly unverified. Does not prepare, authorize, replay, send or change admission.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    }
+  ],
+  "events": [
+    {
+      "name": "test.ping",
+      "description": "A synthetic connectivity probe; contains no Weixin messages.",
+      "delivery": [
+        "webhook"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "payloadSchema": {
+        "type": "object",
+        "properties": {
+          "nonce": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "nonce"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "weixin.message",
+      "description": "A new private message from the QR-bound Weixin owner. Read it with read_weixin_message; reply only with reply_weixin_message.",
+      "delivery": [
+        "webhook"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "payloadSchema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,195 @@
+{
+  "files": [
+    {
+      "bytes": 37136,
+      "path": "probe_tests/fixtures/localcutover_baseline/probe/weixin.py",
+      "sha256": "7b616740ecdd9b98b86c3aada659200832ce74ff1a984eb4b3a6e877fd0a2a05"
+    },
+    {
+      "bytes": 3549,
+      "path": "probe_tests/fixtures/localcutover_baseline/probe/login.py",
+      "sha256": "f7e16c15956ee251c333f00942c6204216fadbc04ea611a263aca1e537ccd83a"
+    },
+    {
+      "bytes": 17145,
+      "path": "probe_tests/fixtures/localcutover_baseline/probe/dotledger.py",
+      "sha256": "5ddb246399ee557e99bdd9438b73ded94bc35bd57fe2503bcc25afbafa5b51ba"
+    },
+    {
+      "bytes": 50589,
+      "path": "probe_tests/fixtures/localcutover_baseline/probe/probe.py",
+      "sha256": "c223fc731b9543f6d01dbe124eca61e44e3a5c783206d00648ab49ab2a5c8098"
+    },
+    {
+      "bytes": 23539,
+      "path": "probe_tests/fixtures/localcutover_baseline/probe/outbound.py",
+      "sha256": "d4a8b2bad8b90d7886be87da743666d57f7a2301077009248f929997f5912013"
+    },
+    {
+      "bytes": 5839,
+      "path": "probe_tests/fixtures/localcutover_baseline/probe/event_delivery.py",
+      "sha256": "6879e406926e56200d83b804831c52a7fb13dae78defc8be8973ab0d437abb49"
+    },
+    {
+      "bytes": 9627,
+      "path": "probe_tests/fixtures/localcutover_baseline/probe/dotcutover.py",
+      "sha256": "afa8107118c1a9f3cd411a9742e9da149b425fea90bb6327534ae277545a3c1b"
+    },
+    {
+      "bytes": 9239,
+      "path": "probe_tests/fixtures/localcutover_baseline/probe/transport_timing.py",
+      "sha256": "145d2f0339f9af03eda984f54c5b20185e42c2e809ae31d27864268ee78d5112"
+    },
+    {
+      "bytes": 23245,
+      "path": "probe_tests/fixtures/localcutover_baseline/probe/dotjournal.py",
+      "sha256": "06ca0f0c3946e965ac12d5f4fd1954eb9ba9e2da0a5dcfb20ce5e5569cb452f7"
+    },
+    {
+      "bytes": 15219,
+      "path": "probe_tests/fixtures/localcutover_baseline/probe/dotepoch.py",
+      "sha256": "788a5855ab28b55c15a6656205547b716194df7e4bd9b9f9998a34d42ddb2950"
+    },
+    {
+      "bytes": 15282,
+      "path": "probe_tests/fixtures/localcutover_baseline/probe/receipts.py",
+      "sha256": "058c1fa50c9e7b46f34b5f5931c459b65acfe865f4ec1b775c8ff86864c32855"
+    },
+    {
+      "bytes": 24385,
+      "path": "probe_tests/fixtures/localcutover_baseline/probe/media.py",
+      "sha256": "d662b551bc171717f41b856f4eb915d24682d6593a07229e88ea148a9deb60a0"
+    },
+    {
+      "bytes": 1070,
+      "path": "probe_tests/fixtures/localcutover_baseline/LICENSE",
+      "sha256": "58f3a2ac1a411ae1018f47ec6e5d3662372f9097879dee47b2cb388de088ff33"
+    },
+    {
+      "bytes": 2241,
+      "path": "probe_tests/fixtures/localcutover_baseline/NOTICE.md",
+      "sha256": "76184d963b40d3e4e33bfe088184fbba7449997a2a8db9ba6d0145841bca310a"
+    },
+    {
+      "bytes": 48731,
+      "path": "probe_tests/fixtures/guarded_rollback/probe/weixin.py",
+      "sha256": "7689aa947ca5b306e73523f79e2fbea4f24b1e67518e58df11a8e4223d3911df"
+    },
+    {
+      "bytes": 3549,
+      "path": "probe_tests/fixtures/guarded_rollback/probe/login.py",
+      "sha256": "f7e16c15956ee251c333f00942c6204216fadbc04ea611a263aca1e537ccd83a"
+    },
+    {
+      "bytes": 17145,
+      "path": "probe_tests/fixtures/guarded_rollback/probe/dotledger.py",
+      "sha256": "5ddb246399ee557e99bdd9438b73ded94bc35bd57fe2503bcc25afbafa5b51ba"
+    },
+    {
+      "bytes": 50606,
+      "path": "probe_tests/fixtures/guarded_rollback/probe/probe.py",
+      "sha256": "a12dd1911f60bf9df7c8d012e921cd56ede9eeffa3a97ecf79c940dcc418008a"
+    },
+    {
+      "bytes": 23539,
+      "path": "probe_tests/fixtures/guarded_rollback/probe/outbound.py",
+      "sha256": "d4a8b2bad8b90d7886be87da743666d57f7a2301077009248f929997f5912013"
+    },
+    {
+      "bytes": 5839,
+      "path": "probe_tests/fixtures/guarded_rollback/probe/event_delivery.py",
+      "sha256": "6879e406926e56200d83b804831c52a7fb13dae78defc8be8973ab0d437abb49"
+    },
+    {
+      "bytes": 16133,
+      "path": "probe_tests/fixtures/guarded_rollback/probe/dotcutover.py",
+      "sha256": "4e66a12835b4b22063abca4463c174bb4e18c08fbd545aedcbb6b24461802095"
+    },
+    {
+      "bytes": 9239,
+      "path": "probe_tests/fixtures/guarded_rollback/probe/transport_timing.py",
+      "sha256": "145d2f0339f9af03eda984f54c5b20185e42c2e809ae31d27864268ee78d5112"
+    },
+    {
+      "bytes": 31381,
+      "path": "probe_tests/fixtures/guarded_rollback/probe/dotjournal.py",
+      "sha256": "858270a0cae2ab4048fcec0c5d7d1e1d327b42eff0b9b57d3c21753da4bcec06"
+    },
+    {
+      "bytes": 15219,
+      "path": "probe_tests/fixtures/guarded_rollback/probe/dotepoch.py",
+      "sha256": "788a5855ab28b55c15a6656205547b716194df7e4bd9b9f9998a34d42ddb2950"
+    },
+    {
+      "bytes": 15282,
+      "path": "probe_tests/fixtures/guarded_rollback/probe/receipts.py",
+      "sha256": "058c1fa50c9e7b46f34b5f5931c459b65acfe865f4ec1b775c8ff86864c32855"
+    },
+    {
+      "bytes": 24385,
+      "path": "probe_tests/fixtures/guarded_rollback/probe/media.py",
+      "sha256": "d662b551bc171717f41b856f4eb915d24682d6593a07229e88ea148a9deb60a0"
+    },
+    {
+      "bytes": 1070,
+      "path": "probe_tests/fixtures/guarded_rollback/LICENSE",
+      "sha256": "58f3a2ac1a411ae1018f47ec6e5d3662372f9097879dee47b2cb388de088ff33"
+    },
+    {
+      "bytes": 2241,
+      "path": "probe_tests/fixtures/guarded_rollback/NOTICE.md",
+      "sha256": "76184d963b40d3e4e33bfe088184fbba7449997a2a8db9ba6d0145841bca310a"
+    },
+    {
+      "bytes": 1070,
+      "path": "probe_tests/fixtures/rollback_baseline/LICENSE",
+      "sha256": "58f3a2ac1a411ae1018f47ec6e5d3662372f9097879dee47b2cb388de088ff33"
+    },
+    {
+      "bytes": 1304,
+      "path": "probe_tests/fixtures/rollback_baseline/NOTICE.md",
+      "sha256": "df8ce938f1c1405c5347e413e7c778a45d724c51da195780b5d75dcf1a8eaede"
+    },
+    {
+      "bytes": 14229,
+      "path": "probe_tests/fixtures/rollback_baseline/probe/dotledger.py",
+      "sha256": "f800aa30823a28a43f258d48becfa466e28105f020f1d95bb56d834dab57026f"
+    },
+    {
+      "bytes": 3549,
+      "path": "probe_tests/fixtures/rollback_baseline/probe/login.py",
+      "sha256": "f7e16c15956ee251c333f00942c6204216fadbc04ea611a263aca1e537ccd83a"
+    },
+    {
+      "bytes": 24217,
+      "path": "probe_tests/fixtures/rollback_baseline/probe/media.py",
+      "sha256": "2a9d40c6acba3910d0f50d76280a6cff48c8d66654b4fde9160ae18df623cbb4"
+    },
+    {
+      "bytes": 23539,
+      "path": "probe_tests/fixtures/rollback_baseline/probe/outbound.py",
+      "sha256": "d4a8b2bad8b90d7886be87da743666d57f7a2301077009248f929997f5912013"
+    },
+    {
+      "bytes": 44870,
+      "path": "probe_tests/fixtures/rollback_baseline/probe/probe.py",
+      "sha256": "3d8336b276d9a42211c8b3b661b951cf5caa66ee83268fcb4a51c0b7476b74d3"
+    },
+    {
+      "bytes": 15282,
+      "path": "probe_tests/fixtures/rollback_baseline/probe/receipts.py",
+      "sha256": "058c1fa50c9e7b46f34b5f5931c459b65acfe865f4ec1b775c8ff86864c32855"
+    },
+    {
+      "bytes": 36592,
+      "path": "probe_tests/fixtures/rollback_baseline/probe/weixin.py",
+      "sha256": "310f3044865edfda35d53706f90a7aa01f5c86405421ac1466624580aaf15aa1"
+    }
+  ],
+  "purpose": "Static test-only historical source; never deploy",
+  "source_versions": {
+    "guarded_rollback": "0.5.0+local.video1.dotledger1.eventlease1.p0receipt1.eventpump1.reconcile1.mirrorjournal1.localcutover1.guardedrollback1",
+    "localcutover_baseline": "0.5.0+local.video1.dotledger1.eventlease1.p0receipt1.eventpump1.reconcile1.mirrorjournal1.localcutover1",
+    "rollback_baseline": "0.5.0+local.video1.dotledger1.eventlease1.p0receipt1"
+  }
+}
