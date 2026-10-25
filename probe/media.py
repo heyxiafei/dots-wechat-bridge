@@ -26,6 +26,7 @@ except ImportError:
 MAX_FILE = 20 * 1024 * 1024
 MAX_CACHE = 128 * 1024 * 1024
 MAX_CHUNK = 65536
+MAX_DOWNLOAD_ATTEMPTS = 3
 RETENTION = 7 * 86400
 MAX_PIXELS = 8_000_000
 CDN_HOSTS = frozenset(('novac2c.cdn.weixin.qq.com', 'ilinkai.weixin.qq.com',
@@ -312,6 +313,9 @@ class MediaStore:
         self.directory.mkdir(mode=0o700, exist_ok=True)
         os.chmod(self.directory, 0o700)
         self.next_cleanup = 0
+        # A cache hit is valid only while the opened file's identity and change
+        # timestamps still match the bytes verified against the database hash.
+        self._verified_chunks = {}
         self.db.executescript('''CREATE TABLE IF NOT EXISTS weixin_attachments (
             id TEXT PRIMARY KEY, message_id TEXT NOT NULL, account TEXT NOT NULL, peer TEXT NOT NULL,
             kind TEXT NOT NULL, filename TEXT NOT NULL, ref_json TEXT,
@@ -376,7 +380,11 @@ class MediaStore:
     def recover_inflight(self):
         with self.lock, self.db:
             # CDN GET may safely retry; no message sends are performed here.
-            self.db.execute("UPDATE weixin_attachments SET status='queued' WHERE status='downloading'")
+            self.db.execute("""UPDATE weixin_attachments SET status='error',
+                error_kind='media_attempts_exhausted',ref_json=NULL
+                WHERE status IN ('queued','downloading') AND attempts>=?""", (MAX_DOWNLOAD_ATTEMPTS,))
+            self.db.execute("UPDATE weixin_attachments SET status='queued' WHERE status='downloading' AND attempts<?",
+                            (MAX_DOWNLOAD_ATTEMPTS,))
 
     def cleanup(self):
         now = self.clock()
@@ -409,10 +417,19 @@ class MediaStore:
         self.cleanup()
         now = self.clock()
         with self.lock, self.db:
-            row = self.db.execute("SELECT * FROM weixin_attachments WHERE status='queued' AND next_at<=? ORDER BY created_at LIMIT 1", (now,)).fetchone()
-            if not row:
-                return False
-            self.db.execute("UPDATE weixin_attachments SET status='downloading',attempts=attempts+1 WHERE id=?", (row['id'],))
+            # Also retire legacy/stale queued rows if a caller invokes the
+            # worker without first running startup recovery.
+            exhausted = self.db.execute("""UPDATE weixin_attachments SET status='error',
+                error_kind='media_attempts_exhausted',ref_json=NULL
+                WHERE status='queued' AND attempts>=?""", (MAX_DOWNLOAD_ATTEMPTS,)).rowcount
+            row = self.db.execute("SELECT * FROM weixin_attachments WHERE status='queued' AND attempts<? AND next_at<=? ORDER BY created_at LIMIT 1",
+                                  (MAX_DOWNLOAD_ATTEMPTS, now)).fetchone()
+            if row:
+                self.db.execute("UPDATE weixin_attachments SET status='downloading',attempts=attempts+1 WHERE id=?", (row['id'],))
+        if exhausted:
+            self.probe.notify_events()
+        if not row:
+            return bool(exhausted)
         temp = self.path(row['id']).with_suffix('.part')
         try:
             ref = json.loads(row['ref_json'])
@@ -432,7 +449,7 @@ class MediaStore:
                                 (len(raw), mime, hashlib.sha256(raw).hexdigest(), filename, row['id']))
         except Exception as exc:
             kind = exc.kind if isinstance(exc, WeixinError) else 'media_processing_error'
-            retry = kind in ('media_timeout', 'media_network_error') and row['attempts'] + 1 < 3
+            retry = kind in ('media_timeout', 'media_network_error') and row['attempts'] + 1 < MAX_DOWNLOAD_ATTEMPTS
             with self.lock, self.db:
                 self.db.execute("UPDATE weixin_attachments SET status=?,next_at=?,error_kind=?,ref_json=CASE WHEN ? THEN ref_json ELSE NULL END WHERE id=?",
                                 ('queued' if retry else 'error', now + 5 * (row['attempts'] + 1), kind, retry, row['id']))
@@ -482,10 +499,29 @@ class MediaStore:
         try:
             fd = os.open(self.path(aid), os.O_RDONLY | os.O_NOFOLLOW)
             with os.fdopen(fd, 'rb') as source:
-                if os.fstat(source.fileno()).st_size != row['size']:
+                def identity():
+                    stat = os.fstat(source.fileno())
+                    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+                fingerprint = identity()
+                if fingerprint[2] != row['size']:
                     raise WeixinError('attachment_integrity_error')
+                with self.lock:
+                    verified = self._verified_chunks.get(aid) == (row['sha256'], fingerprint)
+                if not verified:
+                    digest = hashlib.sha256()
+                    for block in iter(lambda: source.read(1024 * 1024), b''):
+                        digest.update(block)
+                    if identity() != fingerprint or digest.hexdigest() != row['sha256']:
+                        raise WeixinError('attachment_integrity_error')
+                    with self.lock:
+                        if len(self._verified_chunks) >= 128:
+                            self._verified_chunks.pop(next(iter(self._verified_chunks)))
+                        self._verified_chunks[aid] = (row['sha256'], fingerprint)
                 source.seek(offset)
                 raw = source.read(min(length, row['size'] - offset))
+                if identity() != fingerprint:
+                    raise WeixinError('attachment_integrity_error')
         except OSError:
             raise WeixinError('attachment_cache_unavailable') from None
         return {'message_id': mid, 'attachment_id': aid, 'offset': offset, 'size': len(raw),

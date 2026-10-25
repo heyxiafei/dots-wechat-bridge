@@ -1,17 +1,42 @@
 # 离线验证范围
 
-这是 singletrial1 + steadyfuture1 的离线候选分发源码。依赖二进制、真实数据库、账号配置和私人报告不在包内。每次修改或导出后都重新验证实际目录，旧计数不充当新回执；新增未来来源协议须单独验收，不能用单条试验通过代替持续同步。
+这是 singletrial1 + steadyfuture1 的公开分发源码的离线验证范围。依赖二进制、真实数据库、账号配置和私人报告不在包内。每次修改或导出后都重新验证实际目录，旧计数不充当新回执；新增未来来源协议须单独验收，不能用单条试验通过代替持续同步。
 
 ## 复现命令
 
-在全新解压目录使用 Python 3.10+。先扫描还没有 `.venv` 的原始源码目录；再运行 `sh scripts/bootstrap.sh`，默认 `python3` 较旧时用 `PYTHON_BIN=/absolute/path/to/python3.11 sh scripts/bootstrap.sh`。脚本拒绝覆盖已有 `.venv`。成功后复核测试与 schema：
+在全新、无 `.git` 的归档目录使用 Python 3.10+。下面从公开仓库当前 `main` 创建归档目录；先记录实际提交 SHA，再核对文件并执行全套验证，不能沿用旧基线的回执。目录所在路径须符合 README 所列的 ASCII 无空格绝对路径约束。扫描器刻意拒绝 `.git`，不能直接对 Git 克隆目录执行 `scan-public-bundle.py .`。示例目录必须此前不存在：
 
 ```sh
-python3 -B scripts/scan-public-bundle.py . --json   # 创建 .venv 之前
-sh scripts/bootstrap.sh                         # 或设置 PYTHON_BIN
+git clone https://github.com/heyxiafei/dots-wechat-bridge.git dots-wechat-bridge-source
+cd dots-wechat-bridge-source
+git rev-parse HEAD  # 保存此完整 SHA，作为本次验证的源码版本
+mkdir ../dots-wechat-bridge-reviewed
+git archive --format=tar HEAD | tar -xf - -C ../dots-wechat-bridge-reviewed
+cd ../dots-wechat-bridge-reviewed
+python3 -B scripts/scan-public-bundle.py . --json
+python3 - <<'PY'
+from pathlib import Path
+import hashlib, json
+root = Path('.')
+manifest = json.loads((root / 'PUBLIC-BUNDLE-MANIFEST.json').read_text())
+expected = {'PUBLIC-BUNDLE-MANIFEST.json'}
+for item in manifest['files']:
+    path = item['path']
+    data = (root / path).read_bytes()
+    if len(data) != item['bytes'] or hashlib.sha256(data).hexdigest() != item['sha256']:
+        raise SystemExit('Manifest mismatch: ' + path)
+    expected.add(path)
+actual = {str(path.relative_to(root)) for path in root.rglob('*') if path.is_file()}
+if actual != expected:
+    raise SystemExit('Manifest file list mismatch')
+print('Manifest verified:', len(expected), 'files')
+PY
+sh scripts/bootstrap.sh
 .venv/bin/python -B -m unittest discover -s probe_tests
 .venv/bin/python -B scripts/generate-schema.py --check
 ```
+
+若系统默认 `python3` 较旧，用 `PYTHON_BIN=/absolute/path/to/python3.11 sh scripts/bootstrap.sh` 替代上面的 bootstrap 行。脚本拒绝覆盖已有 `.venv`；修改发行字节后，重新导出一个全新目录，再按新目录的退出码、失败数和 skip 数记证据。
 
 跨版本测试所需的 `rollback_baseline`、`localcutover_baseline` 与 `guarded_rollback` 均在 `probe_tests/fixtures/`；不再需要兄弟目录或 `WECHAT_COMPAT_BASELINE_DIR`。逐文件哈希及历史版本在 `probe_tests/fixtures/FIXTURE-PROVENANCE.json`，每组保留自己的 LICENSE 和 NOTICE。它们只是静态测试输入，**不可作为生产回退包**。测试仅在临时目录建合成数据库，子进程阻断网络；缺文件、哈希不符、测试失败或 skip 均应如实报告，不能称全套通过。
 

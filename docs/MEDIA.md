@@ -24,7 +24,9 @@ transport_status保留原细节：preparing/sending/context_required/auth_requir
 
 ## 入站
 
-`read_attachment_chunk(message_id,attachment_id,offset,length)` 的 length为1..65536。data_base64仅在structuredContent中，content.text不含二进制。重组时校验ID、range、total_size和whole SHA256。图片工具返回image/jpeg预览，去除EXIF，原始bytes仍在私有缓存。
+`read_attachment_chunk(message_id,attachment_id,offset,length)` 的 length为1..65536。data_base64仅在structuredContent中，content.text不含二进制。读取端在首次读取缓存文件或其身份、时间戳变化时流式核对整文件 SHA256；调用方重组后仍须校验ID、range、total_size和whole SHA256。图片工具返回image/jpeg预览，去除EXIF，原始bytes仍在私有缓存。
+
+入站媒体的三次下载尝试上限跨进程重启保留：第三次下载中断后进入终态错误，不发起第四次 GET。同一消息的其他附件独立处理；只有所需附件各自到达缓存或错误终态，事件才能按其实际状态继续。
 
 媒体缓存共享128MiB、TTL7天；过期需本人重发。出站保留私有源文件并在终态清除AES/CDN引用。无网络公开下载地址、无整文件base64或ASR。
 

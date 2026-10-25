@@ -221,7 +221,7 @@ def collect(source, baseline):
         raise BuildFailure(failures)
     manifest = {
         "format_version": 1,
-        "purpose": "unpublished candidate source; no deployment or end-to-end success claim",
+        "purpose": "public source bundle; no deployment or end-to-end success claim",
         "source_policy": "fixed allowlist; no Git history, runtime, state, credentials, binaries or network",
         "fixture_policy": "whole-file reviewed SHA256 and counts required for legacy replacement; clean public fixtures unchanged; core unchanged",
         "normalizations": normalizations,

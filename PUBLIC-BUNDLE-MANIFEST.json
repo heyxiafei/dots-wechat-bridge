@@ -21,9 +21,9 @@
       "sha256": "aed8be893bb4c0aa9fbd9496ac23d494b97e8ff49767fe942b695c1f51591480"
     },
     {
-      "bytes": 23693,
+      "bytes": 25033,
       "path": "README.md",
-      "sha256": "2e3493bdc6b9a45b99677e2ea4892d8538724607fc244ae7ce42129c642a2ec7"
+      "sha256": "95c80d0cc7aaba4a86cb06d44b8ad2384221befd0dcb1f6abec00790843de0c4"
     },
     {
       "bytes": 566,
@@ -56,9 +56,9 @@
       "sha256": "ff8eb05557f2f371512af8eb22c599002bc43bac383d9510a5d88b51ce66dfb7"
     },
     {
-      "bytes": 4148,
+      "bytes": 4533,
       "path": "docs/MEDIA.md",
-      "sha256": "047388a5dacac195909e9147e7b48d3edc3e1d2927726e14e1d8c9ea8a2acad4"
+      "sha256": "31f7416e6f13feeb55c3df01cfa7e7c079e7303f7d92adde5335723a0c665ccf"
     },
     {
       "bytes": 10134,
@@ -71,9 +71,9 @@
       "sha256": "42e07b214df9e815a9bc434e962c86d395444d1be82c9c853d7b3c9d4f268e2b"
     },
     {
-      "bytes": 3073,
+      "bytes": 3585,
       "path": "docs/PUBLISHING.md",
-      "sha256": "f7871ac9b86b14f869d094dea34f6f63c2be623ac333d8ed845fb631395226c3"
+      "sha256": "83b7b69f5d830b2f71f71430a980774bcf1848b64cafabf7b87aa7d1fb388b76"
     },
     {
       "bytes": 7190,
@@ -96,9 +96,9 @@
       "sha256": "8d6c20f398e8215701bdda47e401af6f0e971f493817c30d65e31e5f9d4a5148"
     },
     {
-      "bytes": 2068,
+      "bytes": 2145,
       "path": "docs/SKILL-INSTALLATION.md",
-      "sha256": "bdd09c916a4e052f521c965499fae7f3b9638009a1d1fb87ed38c266e8472639"
+      "sha256": "4bac38b47e1f4fa87d5b4fb96a85b5489840d4e56e10dc4264a94f43fd85bc65"
     },
     {
       "bytes": 5324,
@@ -111,9 +111,9 @@
       "sha256": "b84716534f9e21291bb72162329b8eee0fb8c76e560096e97745a733a5189f6d"
     },
     {
-      "bytes": 3198,
+      "bytes": 4582,
       "path": "docs/VALIDATION.md",
-      "sha256": "8688150ce033b6daafbbf6ef78234647f815d10a73ca4ca4b4e0063a9f60cb14"
+      "sha256": "56829106cc7cfed7681371fd8d05d33a9bd06225db792876be154f6e1bfaea5c"
     },
     {
       "bytes": 36186,
@@ -166,9 +166,9 @@
       "sha256": "f7e16c15956ee251c333f00942c6204216fadbc04ea611a263aca1e537ccd83a"
     },
     {
-      "bytes": 24385,
+      "bytes": 26570,
       "path": "probe/media.py",
-      "sha256": "d662b551bc171717f41b856f4eb915d24682d6593a07229e88ea148a9deb60a0"
+      "sha256": "13b798fd28c03150a591a61076ae1edc7883b092266ef0c098e66c38e6bc766b"
     },
     {
       "bytes": 23539,
@@ -436,9 +436,9 @@
       "sha256": "bc7ded9e578c641dba67928630429096c5de80d7c16782a7c10738d85de51def"
     },
     {
-      "bytes": 15341,
+      "bytes": 19968,
       "path": "probe_tests/test_media.py",
-      "sha256": "987d3c37f05d2a14c7880a86a39999dc74fd295cb5790908f4b073393906e9de"
+      "sha256": "709a4e8f834569f0221e4a2edcb82034006dc6f51b18cc16c18d343d2b922ecf"
     },
     {
       "bytes": 19304,
@@ -526,9 +526,9 @@
       "sha256": "b368a004209d3c4a6ced8ecebe91c24cfc9166125fee9368a60ff27ff79d7337"
     },
     {
-      "bytes": 13250,
+      "bytes": 16542,
       "path": "probe_tests/test_weixin.py",
-      "sha256": "ca44cad5e72d5b10b976a5881a36139481e45e046e93a797d24a252fe0930849"
+      "sha256": "2604444c158b0e7ff0d996469efde8214f55565077903fda469b2418a50429c9"
     },
     {
       "bytes": 140,
@@ -546,9 +546,9 @@
       "sha256": "4412dc1671e049c2d80cb2edf4ba07558c7fe63e5f7313bf86c4f6235ccd9a3f"
     },
     {
-      "bytes": 14951,
+      "bytes": 14943,
       "path": "scripts/build-public-bundle.py",
-      "sha256": "a4b4cd0a91ce6df6cf9970999a2b284cc3e85a22a299174acf3dbfa91eb44dcc"
+      "sha256": "60e788d5ad7cf52674dc9ab169739c67b7552ad8947ba0f93a12c4e53aaa8335"
     },
     {
       "bytes": 731,
@@ -634,6 +634,6 @@
   "fixture_policy": "whole-file reviewed SHA256 and counts required for legacy replacement; clean public fixtures unchanged; core unchanged",
   "format_version": 1,
   "normalizations": [],
-  "purpose": "unpublished candidate source; no deployment or end-to-end success claim",
+  "purpose": "public source bundle; no deployment or end-to-end success claim",
   "source_policy": "fixed allowlist; no Git history, runtime, state, credentials, binaries or network"
 }

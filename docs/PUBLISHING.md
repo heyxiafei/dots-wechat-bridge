@@ -1,6 +1,8 @@
 # 源码与 Skill 发布
 
-发行范围是 singletrial1 + steadyfuture1 公开候选源码、包内兼容测试夹具与安装指南。[heyxiafei/dots-wechat-bridge](https://github.com/heyxiafei/dots-wechat-bridge) 是本人的独立公开发布仓库；仓库已存在不代表本候选已上传。发布前核对目标分支、最新 commit 和差异，发布后以该仓库的实际 commit/tag 与本包 Manifest 读回确认。[RerrentLinden/dots-wechat-bridge](https://github.com/RerrentLinden/dots-wechat-bridge) 仅是 MIT 上游来源，不得将本候选推送到上游或 `dot-blender-studio`。
+发行范围是 singletrial1 + steadyfuture1 公开源码、包内兼容测试夹具与安装指南。[heyxiafei/dots-wechat-bridge](https://github.com/heyxiafei/dots-wechat-bridge) 是本人的独立公开发布仓库；首次逐文件核验的 `main` 基线提交为 `4842ad3d49607d50a875af7c7cf1e4319255bd20`。之后的本地修复或新提交均须以新的远端 commit、实际文件和本包 Manifest 读回确认，不能沿用基线的测试回执。[RerrentLinden/dots-wechat-bridge](https://github.com/RerrentLinden/dots-wechat-bridge) 仅是 MIT 上游来源，不得将本候选推送到上游或 `dot-blender-studio`。
+
+从克隆获取验证目录时，按 README 的 记录实际 `HEAD` + `git archive` 步骤生成无 `.git` 的目录。隐私扫描器拒绝克隆中的 `.git`；直接在克隆根目录运行扫描会得到 `private_directory`，这是预期拒绝，不表示归档目录不合格。安装前用 [离线验证说明](VALIDATION.md) 的命令逐项核对 Manifest 大小与 SHA-256，安装目录的真实绝对路径也须满足 ASCII 无空格约束。
 
 ## 可复现导出
 

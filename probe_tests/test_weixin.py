@@ -3,6 +3,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from probe.probe import Probe, RpcError
 from probe.weixin import MESSAGE_EVENT, WeixinError, api_base, public_ip, parse_api_json
@@ -92,6 +93,59 @@ class WeixinTests(unittest.TestCase):
         self.assertEqual(status["outgoing_text"], "回复原文")
         self.assertTrue(status["accepted"])
         self.assertIsNone(status["delivered"])
+
+    def test_poll_timeout_restart_duplicate_batch_keeps_one_event_and_unknown_send(self):
+        """A lost poll response and a repeated batch must not duplicate an unknown reply."""
+        source = "poll-restart-duplicate"
+        message = self.message(source)
+        responses = [WeixinError("api_timeout"),
+                     {"ret": 0, "msgs": [message], "get_updates_buf": "cursor-one"},
+                     {"ret": 0, "msgs": [message], "get_updates_buf": "cursor-one"}]
+        cursors = []
+
+        def poll(account):
+            cursors.append(account["cursor"])
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        self.client.poll = poll
+        # Any accidental transport call fails the test instead of reaching a real endpoint.
+        with patch("socket.getaddrinfo", side_effect=AssertionError("network forbidden")), \
+             patch("socket.create_connection", side_effect=AssertionError("network forbidden")), \
+             patch("socket.socket.connect", side_effect=AssertionError("network forbidden")), \
+             patch("socket.socket.connect_ex", side_effect=AssertionError("network forbidden")):
+            self.subscribe(MESSAGE_EVENT)
+            self.assertTrue(self.probe.weixin.poll_once())
+            self.assertEqual(self.probe.weixin.account()["cursor"], "")
+            self.assertEqual(self.probe.db.execute("SELECT count(*) FROM weixin_inbox").fetchone()[0], 0)
+
+            self.probe.close(); self.probe = self.open_probe()
+            self.assertTrue(self.probe.weixin.poll_once())
+            mid = self.inbound_id(source)
+            self.assertEqual(self.probe.weixin.account()["cursor"], "cursor-one")
+            self.assertEqual(self.probe.queue_weixin_messages(), 1)
+            self.assertEqual(self.probe.queue_weixin_messages(), 0)
+            self.probe.weixin.queue_reply(mid, "合成回复")
+            self.client.results = [WeixinError("api_timeout")]
+            self.assertTrue(self.probe.weixin.send_once())
+            self.assertEqual(self.probe.weixin.send_status(mid)["status"], "delivery_unknown")
+            self.assertEqual(len(self.client.sent), 1)
+
+            self.probe.close(); self.probe = self.open_probe()
+            self.probe.weixin.recover_inflight()
+            self.assertTrue(self.probe.weixin.poll_once())
+            self.assertEqual(cursors, ["", "", "cursor-one"])
+            self.assertEqual(self.probe.weixin.account()["cursor"], "cursor-one")
+            self.assertEqual(self.probe.db.execute("SELECT count(*) FROM weixin_inbox").fetchone()[0], 1)
+            self.assertEqual(self.probe.db.execute("SELECT count(*) FROM pings WHERE name=?", (MESSAGE_EVENT,)).fetchone()[0], 1)
+            self.assertEqual(self.probe.queue_weixin_messages(), 0)
+            self.probe.weixin.queue_reply(mid, "合成回复")
+            self.assertFalse(self.probe.weixin.send_once())
+            self.assertEqual(self.probe.weixin.send_status(mid)["status"], "delivery_unknown")
+            self.assertEqual(self.probe.db.execute("SELECT count(*) FROM weixin_outbox WHERE message_id=?", (mid,)).fetchone()[0], 1)
+            self.assertEqual(len(self.client.sent), 1)
 
     def test_two_event_subscriptions_and_idempotent_reply_roundtrip(self):
         test_sub = self.subscribe("test.ping")

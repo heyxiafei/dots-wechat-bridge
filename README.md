@@ -1,6 +1,6 @@
 # dots-wechat-bridge
 
-> **singletrial1 + steadyfuture1：独立公开候选源码与可安装 Skill。** 运行版本以 `probe/probe.py` 的 `BUILD_VERSION` 为准；发布前以本包的 manifest、当前离线验证和准确 commit/tag 核对实际能力。候选保留持久关闭、从未授权 prepared 恢复、来源完整性清单、入站失败记录及一次性单来源试验，并包含单条试验关闭后按代际只接纳未来首次入库来源的有限持续准入能力；安装或试验本身不会启用它。源码包的离线结果不证明你的主 Dot 读回、手机送达或真实持续同步已验收。见 [单条试验契约](docs/SINGLE-SOURCE-TRIAL.md)、[持续来源准入](docs/STEADY-FUTURE-ADMISSION.md) 和 [部署/回退范围](docs/RELIABILITY-DEPLOYMENT.md)。
+> **singletrial1 + steadyfuture1：独立公开源码与可安装 Skill。** 运行版本以 `probe/probe.py` 的 `BUILD_VERSION` 为准；使用前以本包的 manifest、当前离线验证和准确 commit/tag 核对实际能力。源码保留持久关闭、从未授权 prepared 恢复、来源完整性清单、入站失败记录及一次性单来源试验，并包含单条试验关闭后按代际只接纳未来首次入库来源的有限持续准入能力；安装或试验本身不会启用它。源码包的离线结果不证明你的主 Dot 读回、手机送达或真实持续同步已验收。见 [单条试验契约](docs/SINGLE-SOURCE-TRIAL.md)、[持续来源准入](docs/STEADY-FUTURE-ADMISSION.md) 和 [部署/回退范围](docs/RELIABILITY-DEPLOYMENT.md)。
 >
 > 安装 Skill 只增加助手工作指南，不会安装或连接私人 MCP 插件、开通准入、创建凭据或发送消息。见 [安装 Skill](docs/SKILL-INSTALLATION.md)。公开包不含任何用户的配置、消息、数据库或依赖二进制。
 >
@@ -14,9 +14,23 @@
 
 ## Codex 快速开始
 
-先取得经过审阅的**本候选源码包**，确认 `PUBLIC-BUNDLE-MANIFEST.json` 中的文件哈希和 [发布检查](docs/PUBLISHING.md)。[heyxiafei/dots-wechat-bridge](https://github.com/heyxiafei/dots-wechat-bridge) 是本人的独立公开仓库；仓库存在不证明本候选已上传，须以该仓库实际发布 commit/tag 与 Manifest 读回确认。[RerrentLinden/dots-wechat-bridge](https://github.com/RerrentLinden/dots-wechat-bridge) 仅是 MIT 上游来源；不要与 `dot-blender-studio` 混用。
+先取得经过审阅的源码。公开仓库 [heyxiafei/dots-wechat-bridge](https://github.com/heyxiafei/dots-wechat-bridge) 已有一份逐文件核验的基线提交 `4842ad3d49607d50a875af7c7cf1e4319255bd20`；如果使用更新提交，重新核对其实际文件、Manifest 和测试，不能借用这个基线的回执。[RerrentLinden/dots-wechat-bridge](https://github.com/RerrentLinden/dots-wechat-bridge) 仅是 MIT 上游来源；不要与 `dot-blender-studio` 混用。
 
-1. 在独立目录解压候选，确认 Python 3.10+。若系统默认 `python3` 较旧，指定已安装的解释器：`PYTHON_BIN=/absolute/path/to/python3.11 sh scripts/bootstrap.sh`；否则运行 `sh scripts/bootstrap.sh`。脚本创建新的 `.venv`，安装锁定依赖、跑离线测试和 schema 检查；已有 `.venv` 会拒绝覆盖。只在新安装目录使用，不对正在运行的实例执行。
+以下示例取得当前 `main`，先记录实际提交 SHA，再生成**不含 `.git` 的安装目录**。安装目录的真实绝对路径须只含 ASCII 字母、数字、`_`、`.`、`/`、`-`，不能有空格或中文；`render-config.py` 在配置阶段会拒绝其他路径。先选好最终路径，再创建 `.venv`。示例中的目录名若已存在，先换一个新的目录名，不覆盖已有安装：
+
+```sh
+git clone https://github.com/heyxiafei/dots-wechat-bridge.git dots-wechat-bridge-source
+cd dots-wechat-bridge-source
+git rev-parse HEAD  # 保存此完整 SHA，作为本次安装和回退的源码版本
+mkdir ../dots-wechat-bridge-reviewed
+git archive --format=tar HEAD | tar -xf - -C ../dots-wechat-bridge-reviewed
+cd ../dots-wechat-bridge-reviewed
+python3 -B scripts/scan-public-bundle.py . --json
+```
+
+扫描器针对无 Git 历史、无运行状态的发行目录；直接扫描克隆目录会正确拒绝 `.git`。按 [离线验证说明](docs/VALIDATION.md) 核对 Manifest 的全部字节和 SHA-256 后再安装。代码复制或后续发布的 commit 必须独立验证。
+
+1. 在上述独立的、路径合规的目录确认 Python 3.10+。若系统默认 `python3` 较旧，指定已安装的解释器：`PYTHON_BIN=/absolute/path/to/python3.11 sh scripts/bootstrap.sh`；否则运行 `sh scripts/bootstrap.sh`。脚本创建新的 `.venv`，安装锁定依赖、跑离线测试和 schema 检查；已有 `.venv` 会拒绝覆盖。只在新安装目录使用，不对正在运行的实例执行。
 2. 可选地按 [Skill 安装说明](docs/SKILL-INSTALLATION.md) 先预览再安装。把本候选源码路径和当前任务交给 Codex；Skill 不提供插件、订阅、权限或密钥。
 3. 让 Codex 先只读核查主机、已有实例、产品 Tunnel/插件/MCP Events 能力和目标 Dot，再按下方六个关卡报告各自证据。本人在私有终端处理专用密钥、扫码和手机确认。既有实例走 [升级与恢复](docs/RELIABILITY-DEPLOYMENT.md)，保留原订阅、绑定、状态和固定 ACK 设置。安装 Skill、安装依赖、连接插件、绑定微信和订阅事件是不同关卡；每关都要读回真实结果。
 
@@ -124,7 +138,7 @@ sudo -u dotsbridge .venv/bin/python probe/login.py --state-dir runtime/state --p
 
 macOS 前台运行：在另一个终端使用相同命令，去掉 `sudo -u dotsbridge`；保留 `tunnel-client run` 进程。macOS 前台运行没有 systemd 的 CPU/内存限额，仍保留文件、块、缓存和队列上限。Linux 已运行 systemd 后不要再启动第二个 foreground/runtime 实例。
 
-通过标准：QR 轮询 `confirmed`；随后 `get_weixin_status` 返回 `bound=true / owner_only=true / account_status=ready`，收到微信消息后 `connected=true`、`last_error=null`。这证明绑定和轮询，没有证明 AI 事件订阅已经工作。
+通过标准：QR 轮询 `confirmed`；随后 `get_weixin_status` 返回 `bound=true / account_status=ready`，收到微信消息后 `connected=true`、`last_error=null`。`owner_only=true` 表示已有绑定账号，不能单凭这个字段证明真实非本人消息被拒或 MCP 插件只向本人开放。另核对产品侧插件/隧道为本人私有，实际本人消息与回复；若要宣称真实非本人隔离，还须获准进行非本人负例试验。这些状态也没有证明 AI 事件订阅已经工作。
 
 ## 5. 为微信来信创建一个事件订阅
 
