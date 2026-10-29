@@ -38,3 +38,13 @@ ack 的 queued/backoff、context_required、auth_required 状态会让自己的 
 2026-10-04 检查 [Tencent 官方协议](https://github.com/Tencent/openclaw-weixin/blob/main/docs/protocol.md)、[channel.ts](https://github.com/Tencent/openclaw-weixin/blob/main/src/channel.ts)、[send.ts](https://github.com/Tencent/openclaw-weixin/blob/main/src/messaging/send.ts)。channel 声明 blockStreaming=true 并配置块合并，但 sendMessageWeixin 每次生成新的 client_id，文本构造器固定 message_state=FINISH；公开 endpoint 列表没有消息编辑接口。类型中的 GENERATING、update_time_ms、run_id 不构成同气泡增量更新的服务器契约。sendtyping 是输入状态指示，也不是编辑消息。
 
 据上述公开代码，可验证的是完整消息发送，不能验证真正逐字流式或同条编辑。桥接使用简单任务一条、复杂任务最多两条完整回复，不实验未公开的状态语义，也不发送多个碎片冒充流式。未进行真实微信流式探测；结论限定为上述公开官方实现与文档证据。
+
+## 帮助与额度请求提示
+
+新收到的独立 `/help`、`额度`、`查额度`、`查一下额度`及代码列出的精确周额度问法，在 `read_weixin_message.fixed_command` 返回只读准备提示。不会将“超额度”模糊匹配为查询，也不新增 `/quota`。帮助菜单只有一条额度入口，并说明尚未接通插件自动读取。引用、显式转发标记、附件、混合内容、不完整捕获、缺少新捕获标记的历史来源均不给提示；不修改或补标历史。已有 ack/final 承诺返回 `already_committed`，保持原文本、稳定 ID 和未知状态。
+
+提示不是执行或发送授权：协议无法证明未标记的纯文本是否转发，所有提示均 `automatic_send=false`，主处理者仍须核实本人意图与当前账户。此版本没有官方额度客户端，不会在模型启动前自动查询/回复，不承诺秒回。普通来信、事件订阅、镜像准入和发送器均沿用原路径。
+
+主处理者若确实具备该使用者本人账户的官方 `get_usage_limits` 只读工具，可读取本次结果；已有合法、获准 App Server 会话可按其正式 `account/rateLimits/read` RPC 契约读取，不能将 RPC 名当通用 HTTP 地址或自行读取认证文件。桥接安装本身不提供此能力，无入口或账户未核验时明确报未接通，不用缓存充作实时。
+
+统一展示应包含：`📊 Codex 周额度：剩余…，已用…`、`🕒 读取：…（北京时间）`、`🔄 下次重置：…（北京时间）`、`💳 信用点余额：…`。按实际窗口分钟数识别周窗口（10080），不得把五小时窗口当周额度。缺失、过期、异常或无法确认的字段标未知；读取时间来自本次官方读取，余额只能使用实际返回且映射已核实的数据。回复仍使用原幂等 final 槽，已有承诺或结果未知时只查原记录，不能另发通知绕过。
