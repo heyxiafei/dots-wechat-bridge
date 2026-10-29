@@ -47,7 +47,7 @@ SOURCE_PATHS = (
     "docs/P0-RECEIPTS.md", "docs/PUBLISHING.md", "docs/REPLY-WORKFLOW.md",
     "docs/SUBSCRIPTION-LIFETIME.md", "docs/mcp-schema.json",
     "probe/dotledger.py", "probe/event_delivery.py", "probe/login.py", "probe/media.py", "probe/outbound.py",
-    "probe/probe.py", "probe/receipts.py", "probe/weixin.py",
+    "probe/probe.py", "probe/receipts.py", "probe/weixin.py", "probe/fixed_commands.py",
     "scripts/bootstrap.sh", "scripts/build-public-bundle.py", "scripts/generate-schema.py",
     "scripts/install-service.sh", "scripts/media-resource-check.py",
     "scripts/outbound-resource-check.py", "scripts/owner-wechat-login.py",
@@ -59,7 +59,7 @@ SOURCE_PATHS = (
     "probe_tests/test_public_bundle.py", "probe_tests/test_receipts.py",
     "probe_tests/test_reply_phases.py", "probe_tests/test_safe_status_lifetime.py",
     "probe_tests/test_setup.py", "probe_tests/test_subscription_lifetime.py",
-    "probe_tests/test_video.py", "probe_tests/test_weixin.py",
+    "probe_tests/test_video.py", "probe_tests/test_weixin.py", "probe_tests/test_fixed_commands.py",
     "probe_tests/test_fixture_integrity.py",
     "probe_tests/test_journal_receipt_projection.py",
 ) + HISTORICAL_FIXTURE_PATHS

@@ -15,6 +15,11 @@ import ssl
 import time
 from urllib.parse import urlencode, urlsplit
 
+try:
+    from .fixed_commands import capture_command_context, prepare_hint
+except ImportError:
+    from fixed_commands import capture_command_context, prepare_hint
+
 BASE_URL = "https://ilinkai.weixin.qq.com"
 CHANNEL_VERSION = "2.4.9"
 MESSAGE_EVENT = "weixin.message"
@@ -411,6 +416,7 @@ class WeixinStore:
                 identity = "wx_" + hashlib.sha256(encoded([account["id"], account["owner"], str(source)]).encode()).hexdigest()[:32]
                 items = msg.get("item_list", [])
                 content, has_media, manifest = describe_inbound(identity, items)
+                manifest['command_context_v1'] = capture_command_context(msg)
                 unsupported = manifest['issue_codes']
                 created_ms = msg.get("create_time_ms")
                 created_ms = created_ms if isinstance(created_ms, (float, int)) and 0 < created_ms <= (now + 300) * 1000 else now * 1000
@@ -498,12 +504,15 @@ class WeixinStore:
                        'available': False, 'complete': False, 'state': 'unavailable',
                        'scope': 'bounded_inbound_capture_not_dot_visibility',
                        'issue_codes': ['invalid_inbound_manifest'], 'parts': []}
-        return {"message_id": row["id"], "text": row["text"], "created_at": self.probe.iso(row["created_at"]),
+        result = {"message_id": row["id"], "text": row["text"], "created_at": self.probe.iso(row["created_at"]),
                 "kind": row["kind"], "unsupported_types": json.loads(row["unsupported"]), "source": "owner_weixin_dm",
                 "attachments": self.probe.media.list_for_message(row["id"]),
                 "inbound_completeness": capture,
                 "event_delivery": self.probe.event_delivery.for_message(row["id"]),
                 "reply_state": self.reply_state(row["id"])}
+        result["fixed_command"] = prepare_hint(row["text"], row["kind"], capture,
+                                               result["attachments"], result["reply_state"])
+        return result
 
     def reply_state(self, message_id):
         """Read committed slots, including legacy final replies, without writes.
