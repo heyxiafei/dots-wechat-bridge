@@ -11,8 +11,8 @@ from unittest.mock import patch
 from probe.receipts import OwnerReceiptStore, RECEIPT_TEXT
 from probe.weixin import WeixinError, WeixinStore
 
-ACTIVATION = '11111111-1111-1111-1111-111111111111'
-NEXT = '22222222-2222-2222-2222-222222222222'
+ACTIVATION = '00000000-0000-0000-0000-000000000000'
+NEXT = '11111111-1111-1111-1111-111111111111'
 
 
 class ReceiptTests(unittest.TestCase):

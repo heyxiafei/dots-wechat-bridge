@@ -6,7 +6,7 @@ import os
 import socket
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -70,6 +70,82 @@ class MediaTests(unittest.TestCase):
 
     def metadata(self, mid):
         return self.probe.weixin.read_message(mid)['attachments'][0]
+
+    def test_third_download_crash_is_terminal_after_restart_and_sibling_continues(self):
+        mid = self.ingest([self.item(), self.item(file_name='sibling.txt')])
+        exhausted, sibling = self.probe.media.list_for_message(mid)
+        with self.probe.db:
+            self.probe.db.execute("UPDATE weixin_attachments SET attempts=2,created_at=? WHERE id=?",
+                                  (self.now - 1, exhausted['attachment_id']))
+        calls = []
+        def crash(url):
+            calls.append(url)
+            raise SystemExit('simulated crash during third GET')
+        self.probe.media.download = crash
+        with self.assertRaises(SystemExit):
+            self.probe.media.process_once()
+        row = self.probe.db.execute('SELECT status,attempts FROM weixin_attachments WHERE id=?',
+                                    (exhausted['attachment_id'],)).fetchone()
+        self.assertEqual((row['status'], row['attempts']), ('downloading', 3))
+
+        self.probe.close(); self.probe = self.open()
+        self.probe.media.download = self.download
+        self.probe.media.recover_inflight()
+        failed = self.probe.media.list_for_message(mid)[0]
+        self.assertEqual((failed['status'], failed['error_kind']), ('error', 'media_attempts_exhausted'))
+        self.assertIsNone(self.probe.db.execute('SELECT ref_json FROM weixin_attachments WHERE id=?',
+                                                (exhausted['attachment_id'],)).fetchone()[0])
+        self.assertTrue(self.probe.media.process_once())
+        self.assertEqual(self.probe.media.list_for_message(mid)[1]['status'], 'cached')
+        self.assertEqual(base64.b64decode(self.probe.media.read_chunk(mid, sibling['attachment_id'], 0, 100)['data_base64']),
+                         self.payload)
+        self.assertFalse(self.probe.media.process_once())
+        self.assertEqual((len(calls), len(self.downloads)), (1, 1))
+
+    def test_exhausted_queued_row_is_retired_without_startup_recovery(self):
+        mid = self.ingest([self.item()])
+        with self.probe.db:
+            self.probe.db.execute("UPDATE weixin_attachments SET attempts=3 WHERE message_id=?", (mid,))
+        self.probe.event_wakeup.clear()
+        self.assertTrue(self.probe.media.process_once())
+        meta = self.metadata(mid)
+        self.assertEqual((meta['status'], meta['error_kind']), ('error', 'media_attempts_exhausted'))
+        self.assertTrue(self.probe.event_wakeup.is_set())
+        self.assertEqual(self.downloads, [])
+        self.assertFalse(self.probe.media.process_once())
+
+    def test_same_length_cache_corruption_rejects_only_that_attachment(self):
+        mid = self.ingest([self.item(), self.item(file_name='sibling.txt')])
+        self.probe.media.process_once()
+        corrupted = next(row for row in self.probe.media.list_for_message(mid) if row['status'] == 'cached')
+        original = self.payload
+        self.payload = b'independent sibling payload\n'
+        self.probe.media.process_once()
+        healthy = next(row for row in self.probe.media.list_for_message(mid)
+                       if row['attachment_id'] != corrupted['attachment_id'])
+        self.assertEqual(healthy['status'], 'cached')
+        aid = corrupted['attachment_id']
+        # Warm the verification cache before an in-place, same-size modification.
+        self.assertEqual(base64.b64decode(self.probe.media.read_chunk(mid, aid, 0, 100)['data_base64']), original)
+        path = self.probe.media.path(aid)
+        changed = bytes([original[0] ^ 1]) + original[1:]
+        path.write_bytes(changed)
+        self.assertEqual(path.stat().st_size, len(original))
+        with self.assertRaises(WeixinError) as caught:
+            self.probe.media.read_chunk(mid, aid, 0, 100)
+        self.assertEqual(caught.exception.kind, 'attachment_integrity_error')
+        other = self.probe.media.read_chunk(mid, healthy['attachment_id'], 0, 100)
+        self.assertEqual(base64.b64decode(other['data_base64']), self.payload)
+        self.assertEqual(other['sha256'], hashlib.sha256(self.payload).hexdigest())
+
+    def test_unchanged_cache_does_not_rehash_for_each_chunk(self):
+        self.payload = b'x' * (MAX_CHUNK + 1)
+        mid = self.ingest([self.item()]); self.probe.media.process_once()
+        aid = self.metadata(mid)['attachment_id']
+        self.probe.media.read_chunk(mid, aid, 0, MAX_CHUNK)
+        with patch('probe.media.hashlib.sha256', side_effect=AssertionError('unexpected full-file rehash')):
+            tail = self.probe.media.read_chunk(mid, aid, MAX_CHUNK, 1)
+        self.assertEqual(base64.b64decode(tail['data_base64']), b'x')
 
     def test_binary_chunk_contract_owner_ids_hash_eof_and_no_secret(self):
         self.payload = bytes(range(256)) * 300
@@ -155,60 +231,76 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(self.metadata(second)['error_kind'], 'media_too_large')
         self.assertFalse(self.probe.media.process_once())
 
-    def test_transient_get_retries_bounded_and_restart_get_recovery(self):
+    def test_transient_get_stops_after_three_total_attempts(self):
         mid = self.ingest([self.item()])
-        def fail(url): raise WeixinError('media_timeout')
-        self.probe.media.download = fail
+        download = Mock(side_effect=WeixinError('media_timeout'))
+        self.probe.media.download = download
+        outbox_before = self.probe.db.execute('SELECT count(*) FROM weixin_outbox').fetchone()[0]
         for attempt in range(3):
-            self.probe.media.process_once(); self.now += 20
-        self.assertEqual(self.metadata(mid)['status'], 'error')
+            self.assertTrue(self.probe.media.process_once())
+            row = self.probe.db.execute('SELECT status,attempts,ref_json FROM weixin_attachments WHERE message_id=?', (mid,)).fetchone()
+            self.assertEqual(row['attempts'], attempt + 1)
+            self.assertEqual(row['status'], 'queued' if attempt < 2 else 'error')
+            self.assertEqual(row['ref_json'] is None, attempt == 2)
+            self.now += 20
+        self.assertEqual(self.metadata(mid)['error_kind'], 'media_timeout')
         self.assertFalse(self.probe.media.process_once())
-        with self.probe.db: self.probe.db.execute("UPDATE weixin_attachments SET status='downloading',attempts=2")
-        self.probe.media.recover_inflight()
-        self.assertEqual(self.metadata(mid)['status'], 'queued')
+        self.assertEqual(download.call_count, 3)
+        self.assertEqual(self.probe.db.execute('SELECT count(*) FROM weixin_outbox').fetchone()[0], outbox_before)
 
-    def test_third_download_crash_is_terminal_after_restart_and_sibling_continues(self):
-        mid = self.ingest([self.item(), self.item(file_name='sibling.txt')])
-        exhausted, sibling = self.probe.media.list_for_message(mid)
-        with self.probe.db:
-            self.probe.db.execute("UPDATE weixin_attachments SET attempts=2,created_at=? WHERE id=?",
-                                  (self.now - 1, exhausted['attachment_id']))
-        calls = []
-        def crash(url):
-            calls.append(url)
-            raise SystemExit('simulated crash during third GET')
-        self.probe.media.download = crash
-        with self.assertRaises(SystemExit):
-            self.probe.media.process_once()
-        row = self.probe.db.execute('SELECT status,attempts FROM weixin_attachments WHERE id=?',
-                                    (exhausted['attachment_id'],)).fetchone()
-        self.assertEqual((row['status'], row['attempts']), ('downloading', 3))
-
-        self.probe.close(); self.probe = self.open()
-        self.probe.media.download = self.download
-        self.probe.media.recover_inflight()
-        failed = self.probe.media.list_for_message(mid)[0]
-        self.assertEqual((failed['status'], failed['error_kind']), ('error', 'media_attempts_exhausted'))
-        self.assertIsNone(self.probe.db.execute('SELECT ref_json FROM weixin_attachments WHERE id=?',
-                                                (exhausted['attachment_id'],)).fetchone()[0])
-        self.assertTrue(self.probe.media.process_once())
-        self.assertEqual(self.probe.media.list_for_message(mid)[1]['status'], 'cached')
-        self.assertEqual(base64.b64decode(self.probe.media.read_chunk(mid, sibling['attachment_id'], 0, 100)['data_base64']),
-                         self.payload)
-        self.assertFalse(self.probe.media.process_once())
-        self.assertEqual((len(calls), len(self.downloads)), (1, 1))
-
-    def test_exhausted_queued_row_is_retired_without_startup_recovery(self):
+    def test_unexhausted_downloading_recovers_after_reopen_without_reset(self):
         mid = self.ingest([self.item()])
+        # A crash consumes the already-reserved GET attempt. The persisted
+        # reference is still present because this job has not failed terminally.
+        before = self.probe.db.execute('SELECT ref_json FROM weixin_attachments WHERE message_id=?', (mid,)).fetchone()[0]
         with self.probe.db:
-            self.probe.db.execute("UPDATE weixin_attachments SET attempts=3 WHERE message_id=?", (mid,))
-        self.probe.event_wakeup.clear()
-        self.assertTrue(self.probe.media.process_once())
-        meta = self.metadata(mid)
-        self.assertEqual((meta['status'], meta['error_kind']), ('error', 'media_attempts_exhausted'))
-        self.assertTrue(self.probe.event_wakeup.is_set())
-        self.assertEqual(self.downloads, [])
+            self.probe.db.execute("UPDATE weixin_attachments SET status='downloading',attempts=1,next_at=? WHERE message_id=?", (self.now + 5, mid))
+        self.probe.close()
+        self.probe = self.open()
+        download = Mock(side_effect=self.download)
+        self.probe.media.download = download
+        self.probe.media.recover_inflight()
+        row = self.probe.db.execute('SELECT status,attempts,next_at,ref_json FROM weixin_attachments WHERE message_id=?', (mid,)).fetchone()
+        self.assertEqual((row['status'], row['attempts'], row['ref_json']), ('queued', 1, before))
+        self.assertEqual(row['next_at'], self.now + 5)
         self.assertFalse(self.probe.media.process_once())
+        download.assert_not_called()
+        self.now += 5
+        self.assertTrue(self.probe.media.process_once())
+        self.assertEqual(self.metadata(mid)['status'], 'cached')
+        self.assertEqual(self.probe.db.execute('SELECT attempts FROM weixin_attachments WHERE message_id=?', (mid,)).fetchone()[0], 2)
+        self.assertEqual(download.call_count, 1)
+        self.assertEqual(self.probe.db.execute('SELECT count(*) FROM weixin_outbox').fetchone()[0], 0)
+
+    def test_exhausted_queued_or_downloading_never_revives_after_recovery(self):
+        self.probe.subscribe({'name': 'weixin.message', 'arguments': {}, 'delivery': {'mode': 'webhook',
+            'url': 'https://callbacks.example.com/fixture', 'secret': SECRET}})
+        download = Mock(side_effect=AssertionError('exhausted attachment must not issue a GET'))
+        self.probe.media.download = download
+        for index, state in enumerate(('queued', 'downloading')):
+            with self.subTest(state=state):
+                mid = self.ingest([self.item()], source='exhausted-' + str(index))
+                with self.probe.db:
+                    self.probe.db.execute('UPDATE weixin_attachments SET status=?,attempts=3 WHERE message_id=?', (state, mid))
+                self.assertEqual(self.probe.queue_weixin_messages(), 0)
+                outbox_before = self.probe.db.execute('SELECT count(*) FROM weixin_outbox').fetchone()[0]
+                self.probe.close()
+                self.probe = self.open()
+                self.probe.media.download = download
+                self.probe.media.recover_inflight()
+                row = self.probe.db.execute('SELECT status,attempts,error_kind,ref_json FROM weixin_attachments WHERE message_id=?', (mid,)).fetchone()
+                self.assertEqual(tuple(row), ('error', 3, 'media_attempts_exhausted', None))
+                self.assertFalse(self.probe.media.process_once())
+                self.probe.media.recover_inflight()
+                row = self.probe.db.execute('SELECT status,attempts,error_kind,ref_json FROM weixin_attachments WHERE message_id=?', (mid,)).fetchone()
+                self.assertEqual(tuple(row), ('error', 3, 'media_attempts_exhausted', None))
+                download.assert_not_called()
+                self.assertEqual(self.probe.db.execute('SELECT count(*) FROM weixin_outbox').fetchone()[0], outbox_before)
+                # Retiring the attachment releases its original event locally.
+                # Do not call deliver_once: no callback is sent by this test.
+                self.assertEqual(self.probe.queue_weixin_messages(), 1)
+                event = self.probe.db.execute('SELECT status,attempts FROM pings WHERE message_id=?', (mid,)).fetchone()
+                self.assertEqual(tuple(event), ('queued', 0))
 
     def test_event_waits_for_media_then_terminal_error_notifies(self):
         self.probe.subscribe({'name': 'weixin.message', 'arguments': {}, 'delivery': {'mode': 'webhook',
@@ -263,39 +355,6 @@ class MediaTests(unittest.TestCase):
         with self.assertRaises(WeixinError): self.probe.media.read_chunk(mid, aid, 0, 1)
         path.unlink(); path.symlink_to(self.probe.directory / 'probe.sqlite')
         with self.assertRaises(WeixinError): self.probe.media.read_chunk(mid, aid, 0, 1)
-
-    def test_same_length_cache_corruption_rejects_only_that_attachment(self):
-        mid = self.ingest([self.item(), self.item(file_name='sibling.txt')])
-        self.probe.media.process_once()
-        corrupted = next(row for row in self.probe.media.list_for_message(mid) if row['status'] == 'cached')
-        original = self.payload
-        self.payload = b'independent sibling payload\n'
-        self.probe.media.process_once()
-        healthy = next(row for row in self.probe.media.list_for_message(mid)
-                       if row['attachment_id'] != corrupted['attachment_id'])
-        self.assertEqual(healthy['status'], 'cached')
-        aid = corrupted['attachment_id']
-        # Warm the verification cache before an in-place, same-size modification.
-        self.assertEqual(base64.b64decode(self.probe.media.read_chunk(mid, aid, 0, 100)['data_base64']), original)
-        path = self.probe.media.path(aid)
-        changed = bytes([original[0] ^ 1]) + original[1:]
-        path.write_bytes(changed)
-        self.assertEqual(path.stat().st_size, len(original))
-        with self.assertRaises(WeixinError) as caught:
-            self.probe.media.read_chunk(mid, aid, 0, 100)
-        self.assertEqual(caught.exception.kind, 'attachment_integrity_error')
-        other = self.probe.media.read_chunk(mid, healthy['attachment_id'], 0, 100)
-        self.assertEqual(base64.b64decode(other['data_base64']), self.payload)
-        self.assertEqual(other['sha256'], hashlib.sha256(self.payload).hexdigest())
-
-    def test_unchanged_cache_does_not_rehash_for_each_chunk(self):
-        self.payload = b'x' * (MAX_CHUNK + 1)
-        mid = self.ingest([self.item()]); self.probe.media.process_once()
-        aid = self.metadata(mid)['attachment_id']
-        self.probe.media.read_chunk(mid, aid, 0, MAX_CHUNK)
-        with patch('probe.media.hashlib.sha256', side_effect=AssertionError('unexpected full-file rehash')):
-            tail = self.probe.media.read_chunk(mid, aid, MAX_CHUNK, 1)
-        self.assertEqual(base64.b64decode(tail['data_base64']), b'x')
 
     def test_plain_image_requires_valid_image_and_voice_key_required(self):
         mid = self.ingest([self.item(3, media={'encrypt_query_param': 'fixture'})])

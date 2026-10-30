@@ -4,6 +4,7 @@ AES-128 ECB / PKCS7 follows Tencent's pic-decrypt.ts and aes-ecb.ts.
 Opaque CDN references and keys remain inside the private SQLite database.
 """
 import base64
+import contextlib
 import hashlib
 import http.client
 import io
@@ -13,9 +14,11 @@ from pathlib import Path
 import re
 import socket
 import ssl
+import stat
 import time
 import unicodedata
 import warnings
+from types import MappingProxyType
 from urllib.parse import urlencode, urlsplit
 
 try:
@@ -26,12 +29,65 @@ except ImportError:
 MAX_FILE = 20 * 1024 * 1024
 MAX_CACHE = 128 * 1024 * 1024
 MAX_CHUNK = 65536
+MAX_BLOCK = 5 * 1024 * 1024
 MAX_DOWNLOAD_ATTEMPTS = 3
 RETENTION = 7 * 86400
 MAX_PIXELS = 8_000_000
 CDN_HOSTS = frozenset(('novac2c.cdn.weixin.qq.com', 'ilinkai.weixin.qq.com',
                       'wx.qlogo.cn', 'thirdwx.qlogo.cn', 'res.wx.qq.com',
                       'mmbiz.qpic.cn', 'mmbiz.qlogo.cn'))
+IMAGE_FORMATS = frozenset(('JPEG', 'PNG', 'WEBP', 'GIF'))
+IMAGE_DIAGNOSTIC_FORMATS = IMAGE_FORMATS | frozenset(('BMP', 'TIFF', 'ICO', 'PPM',
+    'PCX', 'TGA', 'PDF', 'EPS', 'AVIF', 'HEIF', 'MPO'))
+IMAGE_FAILURE_REASONS = frozenset(('unsupported_format', 'pixel_limit',
+    'decompression_bomb', 'invalid_image_header', 'image_verification_failed',
+    'memory_error', 'image_validation_failed'))
+IMAGE_VALIDATION_STAGES = frozenset(('open', 'format', 'dimensions', 'verify'))
+IMAGE_PAGE_SIDE = 2048
+IMAGE_PAGE_OVERLAP = 64
+MAX_IMAGE_PAGES = 64
+MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024
+
+
+def _image_page_grid(width, height):
+    """Integer grid only; never allocate a list proportional to image length."""
+    stride = IMAGE_PAGE_SIDE - IMAGE_PAGE_OVERLAP
+    axis = lambda size: 1 + (max(0, size - IMAGE_PAGE_SIDE) + stride - 1) // stride
+    columns, rows = axis(width), axis(height)
+    return columns, rows, columns * rows
+
+
+class _PreviewBuffer(io.BytesIO):
+    def write(self, block):
+        if self.tell() + len(block) > MAX_IMAGE_PREVIEW_BYTES:
+            raise WeixinError('image_preview_too_large')
+        return super().write(block)
+
+
+class ImageValidationError(WeixinError):
+    """Legacy public error plus strictly projected, non-content diagnostics.
+
+    Never retain an exception object/string, input bytes, a URL or a key. This
+    is evidence about this one failed validation, not a new retry permission.
+    """
+    def __init__(self, reason, stage, observed_plain_bytes, *, image_format=None,
+                 width=None, height=None):
+        super().__init__('invalid_or_oversize_image')
+        if reason not in IMAGE_FAILURE_REASONS or stage not in IMAGE_VALIDATION_STAGES:
+            raise ValueError('invalid_image_diagnostic_category')
+        safe_int = lambda n, maximum: n if type(n) is int and 0 <= n <= maximum else None
+        width, height = safe_int(width, 2 ** 31 - 1), safe_int(height, 2 ** 31 - 1)
+        pixels = width * height if width is not None and height is not None else None
+        self._diagnostic = MappingProxyType(dict(reason=reason, stage=stage,
+            width=width, height=height, pixels=safe_int(pixels, 2 ** 53 - 1),
+            format=(image_format if image_format in IMAGE_DIAGNOSTIC_FORMATS else
+                    'OTHER' if isinstance(image_format, str) else None),
+            observed_plain_bytes=safe_int(observed_plain_bytes, 2 ** 53 - 1),
+            max_pixels=MAX_PIXELS, max_plain_bytes=MAX_FILE))
+
+    @property
+    def diagnostic(self):
+        return dict(self._diagnostic)
 
 
 def safe_name(value, fallback='attachment.bin'):
@@ -79,6 +135,7 @@ def download_cdn(value):
         length = response.getheader('Content-Length')
         if length and (not length.isdigit() or int(length) > MAX_FILE + 16):
             raise WeixinError('media_too_large')
+        expected_length = int(length) if length else None
         chunks, size = [], 0
         while True:
             if time.monotonic() >= deadline:
@@ -92,6 +149,10 @@ def download_cdn(value):
             if size > MAX_FILE + 16:
                 raise WeixinError('media_too_large')
             chunks.append(block)
+        if expected_length is not None and size != expected_length:
+            # A completed bounded read with a mismatched declared length is
+            # terminal integrity failure, not a transient GET retry category.
+            raise WeixinError('media_download_incomplete')
         return b''.join(chunks)
     except WeixinError:
         raise
@@ -145,18 +206,40 @@ def decrypt(raw, ref):
 
 
 def image_info(raw):
-    from PIL import Image
+    from PIL import Image, UnidentifiedImageError
+    stage, image_format, width, height = 'open', None, None, None
+
+    def failure(reason):
+        return ImageValidationError(reason, stage, len(raw), image_format=image_format,
+                                    width=width, height=height)
+
     try:
         with warnings.catch_warnings():
             warnings.simplefilter('error', Image.DecompressionBombWarning)
             with Image.open(io.BytesIO(raw)) as image:
-                if image.format not in ('JPEG', 'PNG', 'WEBP', 'GIF') or image.width * image.height > MAX_PIXELS:
-                    raise ValueError()
+                image_format, width, height = image.format, image.width, image.height
+                stage = 'format'
+                if image_format not in IMAGE_FORMATS:
+                    raise failure('unsupported_format')
+                stage = 'dimensions'
+                if width * height > MAX_PIXELS:
+                    raise failure('pixel_limit')
                 mime, dimensions = Image.MIME[image.format], [image.width, image.height]
+                stage = 'verify'
                 image.verify()
                 return mime, dimensions
+    except ImageValidationError:
+        raise
+    except (Image.DecompressionBombWarning, Image.DecompressionBombError):
+        raise failure('decompression_bomb') from None
+    except MemoryError:
+        raise failure('memory_error') from None
+    except UnidentifiedImageError:
+        raise failure('invalid_image_header') from None
+    except (OSError, SyntaxError, ValueError):
+        raise failure('image_verification_failed' if stage == 'verify' else 'invalid_image_header') from None
     except Exception:
-        raise WeixinError('invalid_or_oversize_image') from None
+        raise failure('image_validation_failed') from None
 
 
 def video_info(source):
@@ -450,9 +533,20 @@ class MediaStore:
         except Exception as exc:
             kind = exc.kind if isinstance(exc, WeixinError) else 'media_processing_error'
             retry = kind in ('media_timeout', 'media_network_error') and row['attempts'] + 1 < MAX_DOWNLOAD_ATTEMPTS
+            diagnostic_provenance = None
+            if row['kind'] == 'image' and isinstance(exc, ImageValidationError):
+                try:
+                    provenance = json.loads(row['provenance'])
+                    if isinstance(provenance, dict):
+                        provenance['image_validation'] = exc.diagnostic
+                        diagnostic_provenance = encoded(provenance)
+                except (ValueError, TypeError):
+                    # Diagnostics must not turn an existing terminal failure
+                    # into a stuck downloading row or repair unrelated metadata.
+                    pass
             with self.lock, self.db:
-                self.db.execute("UPDATE weixin_attachments SET status=?,next_at=?,error_kind=?,ref_json=CASE WHEN ? THEN ref_json ELSE NULL END WHERE id=?",
-                                ('queued' if retry else 'error', now + 5 * (row['attempts'] + 1), kind, retry, row['id']))
+                self.db.execute("UPDATE weixin_attachments SET status=?,next_at=?,error_kind=?,ref_json=CASE WHEN ? THEN ref_json ELSE NULL END,provenance=coalesce(?,provenance) WHERE id=?",
+                                ('queued' if retry else 'error', now + 5 * (row['attempts'] + 1), kind, retry, diagnostic_provenance, row['id']))
         finally:
             temp.unlink(missing_ok=True)
         # Success or terminal error can release the parent event. Wake only
@@ -490,21 +584,23 @@ class MediaStore:
             raise WeixinError('attachment_not_cached')
         return row
 
-    def read_chunk(self, mid, aid, offset, length):
-        if type(offset) is not int or type(length) is not int or offset < 0 or not 1 <= length <= MAX_CHUNK:
+    def _read_verified(self, mid, aid, offset, length, maximum, include_block=False):
+        if type(offset) is not int or type(length) is not int or offset < 0 or not 1 <= length <= maximum:
             raise WeixinError('invalid_attachment_range')
         row = self.authorized(mid, aid)
-        if offset > row['size']:
+        if type(row['size']) is not int or not 0 <= row['size'] <= MAX_FILE or offset > row['size']:
             raise WeixinError('invalid_attachment_range')
         try:
-            fd = os.open(self.path(aid), os.O_RDONLY | os.O_NOFOLLOW)
+            fd = os.open(self.path(aid), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             with os.fdopen(fd, 'rb') as source:
                 def identity():
                     stat = os.fstat(source.fileno())
                     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
+                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                    raise WeixinError('attachment_integrity_error')
                 fingerprint = identity()
-                if fingerprint[2] != row['size']:
+                if fingerprint[2] != row['size'] or fingerprint[2] > MAX_FILE:
                     raise WeixinError('attachment_integrity_error')
                 with self.lock:
                     verified = self._verified_chunks.get(aid) == (row['sha256'], fingerprint)
@@ -519,29 +615,149 @@ class MediaStore:
                             self._verified_chunks.pop(next(iter(self._verified_chunks)))
                         self._verified_chunks[aid] = (row['sha256'], fingerprint)
                 source.seek(offset)
-                raw = source.read(min(length, row['size'] - offset))
-                if identity() != fingerprint:
+                expected = min(length, row['size'] - offset)
+                raw = source.read(expected)
+                if len(raw) != expected or identity() != fingerprint:
                     raise WeixinError('attachment_integrity_error')
         except OSError:
             raise WeixinError('attachment_cache_unavailable') from None
-        return {'message_id': mid, 'attachment_id': aid, 'offset': offset, 'size': len(raw),
+        current = self.authorized(mid, aid)
+        identity_fields = ('account', 'peer', 'message_id', 'size', 'sha256', 'expires_at')
+        if tuple(current[key] for key in identity_fields) != tuple(row[key] for key in identity_fields):
+            raise WeixinError('attachment_integrity_error')
+        result = {'message_id': mid, 'attachment_id': aid, 'offset': offset, 'size': len(raw),
                 'total_size': row['size'], 'mime_type': row['mime_type'], 'sha256': row['sha256'],
                 'data_base64': base64.b64encode(raw).decode(), 'eof': offset + len(raw) == row['size'],
                 'filename': row['filename'], 'expires_at': self.probe.iso(row['expires_at'])}
+        if include_block:
+            result.update(transfer_version='attachment-block-v1',
+                          block_sha256=hashlib.sha256(raw).hexdigest(),
+                          next_offset=offset + len(raw), max_raw_bytes=MAX_BLOCK)
+        return result
 
-    def read_image(self, mid, aid):
+    def read_chunk(self, mid, aid, offset, length):
+        return self._read_verified(mid, aid, offset, length, MAX_CHUNK)
+
+    def read_block(self, mid, aid, offset, length):
+        return self._read_verified(mid, aid, offset, length, MAX_BLOCK, include_block=True)
+
+    def _read_image_verified_bytes(self, mid, aid):
+        """Bounded original bytes with the chunk reader's FD/binding rules.
+
+        This internal path does not Base64-encode the original or create a new
+        cache. The opened descriptor must be regular, its identity must remain
+        stable across the read, and its bytes must match the retained hash.
+        """
         row = self.authorized(mid, aid)
         if row['kind'] != 'image':
             raise WeixinError('attachment_is_not_image')
-        with os.fdopen(os.open(self.path(aid), os.O_RDONLY | os.O_NOFOLLOW), 'rb') as source:
-            raw = source.read(MAX_FILE + 1)
-        if len(raw) != row['size'] or hashlib.sha256(raw).hexdigest() != row['sha256']:
+        if type(row['size']) is not int or not 1 <= row['size'] <= MAX_FILE:
             raise WeixinError('attachment_integrity_error')
-        # Always strip EXIF/other private metadata and bound model-facing pixels.
+        try:
+            fd = os.open(self.path(aid), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as source:
+                def identity():
+                    info = os.fstat(source.fileno())
+                    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                    raise WeixinError('attachment_integrity_error')
+                fingerprint = identity()
+                if fingerprint[2] != row['size']:
+                    raise WeixinError('attachment_integrity_error')
+                raw = source.read(row['size'])
+                if (len(raw) != row['size'] or identity() != fingerprint
+                        or hashlib.sha256(raw).hexdigest() != row['sha256']):
+                    raise WeixinError('attachment_integrity_error')
+        except OSError:
+            raise WeixinError('attachment_cache_unavailable') from None
+        self._recheck_image_binding(mid, aid, row)
+        return row, raw
+
+    def _recheck_image_binding(self, mid, aid, original):
+        current = self.authorized(mid, aid)
+        fields = ('account', 'peer', 'message_id', 'kind', 'size', 'sha256', 'expires_at')
+        if tuple(current[k] for k in fields) != tuple(original[k] for k in fields):
+            raise WeixinError('attachment_integrity_error')
+
+    def read_image(self, mid, aid, page=None):
+        """One lossy overview (legacy default) or one clear source region.
+
+        Paging retains the 8M-pixel/20MiB guards. Pillow still fully decodes the
+        admitted original before EXIF transpose/region crop; this is not stream
+        cropping and this process has no per-decode RSS budget.
+        """
+        if page is not None and (type(page) is not int or page < 0):
+            raise WeixinError('invalid_image_page')
+        row, raw = self._read_image_verified_bytes(mid, aid)
+        # Revalidate cached/legacy files before any full decode; a crop must
+        # never be used to bypass the original-size or bomb protections.
+        _, dimensions = image_info(raw)
+        _, _, header_count = _image_page_grid(*dimensions)
+        if page is not None:
+            if header_count > MAX_IMAGE_PAGES:
+                raise WeixinError('page_limit_error')
+            if page >= header_count:
+                raise WeixinError('image_page_out_of_range')
         from PIL import Image, ImageOps
-        with Image.open(io.BytesIO(raw)) as image:
-            image = ImageOps.exif_transpose(image).convert('RGB')
-            image.thumbnail((2048, 2048))
-            output = io.BytesIO(); image.save(output, 'JPEG', quality=85)
-        metadata = {**self.metadata(row), 'preview': True, 'preview_mime_type': 'image/jpeg'}
-        return metadata, {'type': 'image', 'mimeType': 'image/jpeg', 'data': base64.b64encode(output.getvalue()).decode()}
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('error', Image.DecompressionBombWarning)
+                with io.BytesIO(raw) as input_file, Image.open(input_file) as source:
+                    if source.format not in IMAGE_FORMATS or source.width * source.height > MAX_PIXELS:
+                        raise WeixinError('invalid_or_oversize_image')
+                    with contextlib.ExitStack() as resources:
+                        # Pillow's image context closes the file; explicitly
+                        # close each decoded raster instead of relying on GC.
+                        resources.callback(source.close)
+                        oriented = ImageOps.exif_transpose(source)
+                        resources.callback(oriented.close)
+                        full = oriented.convert('RGB')
+                        resources.callback(full.close)
+                        source_dimensions = list(full.size)
+                        columns, rows, count = _image_page_grid(*full.size)
+                        pagination_available = count <= MAX_IMAGE_PAGES
+                        if page is None:
+                            source_box = [0, 0, *source_dimensions]
+                            full.thumbnail((IMAGE_PAGE_SIDE, IMAGE_PAGE_SIDE))
+                            image = full
+                        else:
+                            if not pagination_available:
+                                raise WeixinError('page_limit_error')
+                            if page >= count:
+                                raise WeixinError('image_page_out_of_range')
+                            stride = IMAGE_PAGE_SIDE - IMAGE_PAGE_OVERLAP
+                            left, top = (page % columns) * stride, (page // columns) * stride
+                            source_box = [left, top, min(left + IMAGE_PAGE_SIDE, full.width),
+                                          min(top + IMAGE_PAGE_SIDE, full.height)]
+                            image = full.crop(tuple(source_box))
+                            resources.callback(image.close)
+                        preview_dimensions = list(image.size)
+                        output = resources.enter_context(_PreviewBuffer())
+                        image.save(output, 'JPEG', quality=85)
+                        preview = output.getvalue()
+        except WeixinError:
+            raise
+        except (Image.DecompressionBombWarning, Image.DecompressionBombError):
+            raise WeixinError('invalid_or_oversize_image') from None
+        except MemoryError:
+            raise WeixinError('image_preview_resource_error') from None
+        except Exception:
+            raise WeixinError('image_preview_failed') from None
+        if len(preview) > MAX_IMAGE_PREVIEW_BYTES:
+            raise WeixinError('image_preview_too_large')
+        # Decode/encode may take time. Recheck the exact current owner, TTL and
+        # retained identity before returning any image body to the caller.
+        self._recheck_image_binding(mid, aid, row)
+        metadata = {**self.metadata(row), 'preview': True, 'preview_mime_type': 'image/jpeg',
+            'preview_mode': 'overview' if page is None else 'region',
+            'source_dimensions': source_dimensions, 'preview_dimensions': preview_dimensions,
+            'page_index': page, 'page_count': count if pagination_available else None,
+            'page_grid': {'columns': columns, 'rows': rows} if pagination_available else None,
+            'source_box': source_box, 'overlap': 0 if page is None else IMAGE_PAGE_OVERLAP,
+            'pagination_available': pagination_available, 'max_pages': MAX_IMAGE_PAGES,
+            'original_sha256': row['sha256'], 'preview_sha256': hashlib.sha256(preview).hexdigest(),
+            'is_original': False, 'is_complete_source': False, 'lossy_preview': True,
+            'covers_entire_source': page is None, 'full_decode_required': True,
+            'rss_budget_enforced': False, 'first_frame_only': True}
+        return metadata, {'type': 'image', 'mimeType': 'image/jpeg', 'data': base64.b64encode(preview).decode()}

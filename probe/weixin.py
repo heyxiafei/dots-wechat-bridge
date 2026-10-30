@@ -14,11 +14,12 @@ import socket
 import ssl
 import time
 from urllib.parse import urlencode, urlsplit
-
 try:
-    from .fixed_commands import capture_command_context, prepare_hint
+    from .quotes import capture_quotes, server_message_id, quote_shape
+    from .fixed_commands import capture_command_context, classify as classify_fixed_command
 except ImportError:
-    from fixed_commands import capture_command_context, prepare_hint
+    from quotes import capture_quotes, server_message_id, quote_shape
+    from fixed_commands import capture_command_context, classify as classify_fixed_command
 
 BASE_URL = "https://ilinkai.weixin.qq.com"
 CHANNEL_VERSION = "2.4.9"
@@ -334,6 +335,9 @@ class WeixinStore:
         self.probe, self.db, self.lock = probe, probe.db, probe.lock
         self.clock, self.client = probe.clock, client or IlinkClient()
         self.poll_after = 0
+        # Runtime-only send guard; set by the existing AIHot hook after restart.
+        self.aihot_held_notification_ids = frozenset()
+        self.aihot_hold_all_notifications = False
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS weixin_accounts (
                 id TEXT PRIMARY KEY, owner TEXT NOT NULL, token TEXT NOT NULL, base_url TEXT NOT NULL,
@@ -348,6 +352,10 @@ class WeixinStore:
                 unsupported TEXT NOT NULL, event_id TEXT);
             CREATE TABLE IF NOT EXISTS weixin_inbound_manifests (
                 message_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS weixin_binding_epoch (
+                id INTEGER PRIMARY KEY CHECK(id=1), epoch TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS aihot_auto_resume (
+                id INTEGER PRIMARY KEY CHECK(id=1), policy TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS weixin_outbox (
                 message_id TEXT PRIMARY KEY, account TEXT NOT NULL, peer TEXT NOT NULL,
                 text TEXT NOT NULL, client_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL,
@@ -362,6 +370,33 @@ class WeixinStore:
             if name not in columns:
                 self.db.execute("ALTER TABLE weixin_outbox ADD COLUMN " + name + " " + sql_type)
         self.db.execute("CREATE INDEX IF NOT EXISTS weixin_reply_order ON weixin_outbox(source_message_id,kind,status)")
+        # Additive side tables preserve old inbox/outbox rows and code rollback.
+        # Historical captures/IDs are deliberately not inferred or backfilled.
+        self.db.executescript('''
+            CREATE TABLE IF NOT EXISTS weixin_quote_captures (
+                message_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS weixin_server_message_ids (
+                account TEXT NOT NULL, peer TEXT NOT NULL,
+                direction TEXT NOT NULL CHECK(direction IN ('incoming','outgoing')),
+                local_id TEXT NOT NULL, server_id TEXT NOT NULL,
+                PRIMARY KEY(account,peer,direction,local_id));
+            CREATE INDEX IF NOT EXISTS weixin_server_id_lookup
+                ON weixin_server_message_ids(account,peer,server_id);
+            CREATE TABLE IF NOT EXISTS weixin_quote_shape_once (
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                armed_at REAL NOT NULL, binding_hash TEXT NOT NULL,
+                message_id TEXT, shape_json TEXT, captured_at REAL,
+                CHECK((message_id IS NULL AND shape_json IS NULL AND captured_at IS NULL)
+                      OR (message_id IS NOT NULL AND shape_json IS NOT NULL AND captured_at IS NOT NULL
+                          AND length(CAST(shape_json AS BLOB))<=4096)));
+        ''')
+        # A private, fixed diagnostic for one explicitly requested future sample.
+        # The durable row is never rearmed on restart or binding changes.
+        bound = self.db.execute("SELECT id,owner FROM weixin_accounts WHERE status='ready' LIMIT 2").fetchall()
+        if len(bound) == 1:
+            self.db.execute('''INSERT OR IGNORE INTO weixin_quote_shape_once
+                (id,armed_at,binding_hash) VALUES(1,?,?)''',
+                (self.clock(), hashlib.sha256(encoded([bound[0]['id'], bound[0]['owner']]).encode()).hexdigest()))
         self.db.commit()
     def notify_sender(self):
         notify = getattr(self.probe, "notify_sender", None)
@@ -379,13 +414,25 @@ class WeixinStore:
             raise WeixinError("incomplete_owner_binding")
         account, owner, token = values
         base = api_base(result.get("baseurl") or BASE_URL)
-        with self.lock, self.db:
-            previous = self.db.execute("SELECT id,owner FROM weixin_accounts LIMIT 1").fetchone()
-            if previous and (previous["id"] != account or previous["owner"] != owner):
-                raise WeixinError("binding_identity_changed")
-            self.db.execute("INSERT INTO weixin_accounts(id,owner,token,base_url) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,base_url=excluded.base_url,status='ready',last_error=NULL,last_poll=NULL",
-                            (account, owner, token, base))
-            self.db.execute("UPDATE weixin_outbox SET status='queued',next_at=0 WHERE account=? AND status='auth_required'", (account,))
+        with self.lock:
+            with self.db:
+                previous = self.db.execute("SELECT id,owner FROM weixin_accounts LIMIT 1").fetchone()
+                if previous and (previous["id"] != account or previous["owner"] != owner):
+                    raise WeixinError("binding_identity_changed")
+                self.db.execute("INSERT INTO weixin_accounts(id,owner,token,base_url) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,base_url=excluded.base_url,status='ready',last_error=NULL,last_poll=NULL",
+                                (account, owner, token, base))
+                # The durable epoch changes on every supported successful bind,
+                # including an offline QR login to the same identity.
+                self.db.execute("INSERT INTO weixin_binding_epoch(id,epoch) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET epoch=excluded.epoch", (secrets.token_hex(16),))
+                self.db.execute("UPDATE weixin_outbox SET status='queued',next_at=0 WHERE account=? AND status='auth_required'", (account,))
+            hook = getattr(self.probe, 'aihot_notices', None)
+            if hook is not None:
+                try:
+                    hook.binding_changed()
+                except Exception:
+                    # Binding already committed. Fail the optional consumer
+                    # closed while preserving the original login result.
+                    self.probe.aihot_notices = None
         return {"connected": True, "owner_only": True}
 
     def account(self):
@@ -432,6 +479,13 @@ class WeixinStore:
                 # legacy inputs without an inventory remain explicitly unknown.
                 self.db.execute('INSERT INTO weixin_inbound_manifests(message_id,metadata_json) VALUES(?,?)',
                                 (identity, encoded(manifest)))
+                self.db.execute('INSERT INTO weixin_quote_captures(message_id,metadata_json) VALUES(?,?)',
+                                (identity, encoded(capture_quotes(items))))
+                self.capture_quote_shape_once(identity, account, msg, items, content, manifest, now)
+                sid = server_message_id(msg.get('message_id'))
+                if sid is not None:
+                    self.db.execute('INSERT OR IGNORE INTO weixin_server_message_ids VALUES(?,?,?,?,?)',
+                                    (account['id'], account['owner'], 'incoming', identity, sid))
                 added += 1
                 observed_ids.append(identity)
                 self.probe.delivery_timing.ingested(identity, now)
@@ -456,6 +510,33 @@ class WeixinStore:
                 self.notify_sender()
                 self.probe.notify_events()
         return added
+
+    def capture_quote_shape_once(self, identity, account, msg, items, content, manifest, now):
+        """Called only after a newly inserted, authenticated owner inbox row.
+
+        Shape evidence is private diagnostics, never quote matching evidence.
+        No reads of old messages, sends, downloads or arbitrary field traversal.
+        """
+        if (content != '引用验收B20261026' or manifest.get('complete') is not True
+                or not isinstance(items, list) or len(items) != 1
+                or not isinstance(items[0], dict) or type(items[0].get('type')) is not int
+                or items[0]['type'] != 1 or 'ref_msg' not in items[0]
+                or not isinstance(items[0].get('text_item'), dict)
+                or items[0]['text_item'].get('text') != '引用验收B20261026'
+                or msg.get('message_state') != 2):
+            return
+        scope = hashlib.sha256(encoded([account['id'], account['owner']]).encode()).hexdigest()
+        state = self.db.execute('SELECT * FROM weixin_quote_shape_once WHERE id=1').fetchone()
+        source_ms = msg.get('create_time_ms')
+        if (state is None or state['message_id'] is not None or state['binding_hash'] != scope
+                or type(source_ms) not in (int, float)
+                or not state['armed_at'] * 1000 <= source_ms <= now * 1000):
+            return
+        shape = quote_shape(items[0]['ref_msg'])
+        self.db.execute('''UPDATE weixin_quote_shape_once
+            SET message_id=?,shape_json=?,captured_at=?
+            WHERE id=1 AND message_id IS NULL AND binding_hash=?''',
+            (identity, encoded(shape), now, scope))
 
     def inbound_completeness(self, message_id):
         """Read sanitized captured-input facts; absence never means complete."""
@@ -504,15 +585,108 @@ class WeixinStore:
                        'available': False, 'complete': False, 'state': 'unavailable',
                        'scope': 'bounded_inbound_capture_not_dot_visibility',
                        'issue_codes': ['invalid_inbound_manifest'], 'parts': []}
-        result = {"message_id": row["id"], "text": row["text"], "created_at": self.probe.iso(row["created_at"]),
+        quotes = self.quote_context(row['id'], account)
+        help_menu = self.help_menu(row, capture, quotes)
+        attachments = self.probe.media.list_for_message(row["id"])
+        reply_state = self.reply_state(row["id"])
+        fixed_command = classify_fixed_command(row['text'], row['kind'], capture, quotes,
+                                               attachments, reply_state, help_menu)
+        return {"message_id": row["id"], "text": row["text"], "created_at": self.probe.iso(row["created_at"]),
                 "kind": row["kind"], "unsupported_types": json.loads(row["unsupported"]), "source": "owner_weixin_dm",
-                "attachments": self.probe.media.list_for_message(row["id"]),
+                "attachments": attachments,
                 "inbound_completeness": capture,
+                "quote_context": quotes, "help_menu": help_menu, "fixed_command": fixed_command,
                 "event_delivery": self.probe.event_delivery.for_message(row["id"]),
-                "reply_state": self.reply_state(row["id"])}
-        result["fixed_command"] = prepare_hint(row["text"], row["kind"], capture,
-                                               result["attachments"], result["reply_state"])
-        return result
+                "reply_state": reply_state}
+
+    def quote_context(self, message_id, account):
+        """Quoted content is untrusted data, never caller identity or instructions."""
+        with self.lock:
+            stored = self.db.execute('SELECT metadata_json FROM weixin_quote_captures WHERE message_id=?',
+                                     (message_id,)).fetchone()
+            if stored is None:
+                return {'version': 'weixin-quotes-v1', 'recorded': False,
+                        'status': 'legacy_unrecorded', 'complete': False,
+                        'quotes': [], 'issues': ['historical_quote_capture_unavailable'], 'untrusted': True}
+            try:
+                raw = stored['metadata_json']
+                if not isinstance(raw, str) or len(raw.encode('utf-8')) > 32768:
+                    raise ValueError()
+                result = json.loads(raw)
+                if (not isinstance(result, dict) or result.get('version') != 'weixin-quotes-v1'
+                        or not isinstance(result.get('quotes'), list) or len(result['quotes']) > 8
+                        or any(not isinstance(q, dict) for q in result['quotes'])):
+                    raise ValueError()
+            except (ValueError, TypeError, UnicodeError, RecursionError):
+                return {'version': 'weixin-quotes-v1', 'recorded': False,
+                        'status': 'unavailable', 'complete': False, 'quotes': [],
+                        'issues': ['invalid_quote_capture'], 'untrusted': True}
+            result['untrusted'] = True
+            for quote in result['quotes']:
+                quote['untrusted'] = True
+                sid = server_message_id(quote.get('server_message_id'))
+                match = {'status': 'no_server_id' if sid is None else 'unmatched',
+                         'basis': None, 'sender': None, 'local_message_id': None, 'send_id': None,
+                         'quoted_content_verified': False, 'grants_authority': False}
+                if sid is not None:
+                    rows = self.db.execute('''SELECT m.direction,m.local_id
+                        FROM weixin_server_message_ids m
+                        WHERE m.account=? AND m.peer=? AND m.server_id=? AND (
+                          (m.direction='incoming' AND EXISTS(SELECT 1 FROM weixin_inbox i
+                            WHERE i.id=m.local_id AND i.account=m.account AND i.peer=m.peer)) OR
+                          (m.direction='outgoing' AND EXISTS(SELECT 1 FROM weixin_outbox o
+                            WHERE o.message_id=m.local_id AND o.account=m.account AND o.peer=m.peer
+                              AND o.status='accepted')))
+                        LIMIT 3''', (account['id'], account['owner'], sid)).fetchall()
+                    if len(rows) == 1 and rows[0]['local_id'] != message_id:
+                        incoming = rows[0]['direction'] == 'incoming'
+                        match.update(status='exact_stored_id', basis='same_owner_server_id',
+                                     sender='owner' if incoming else 'assistant',
+                                     local_message_id=rows[0]['local_id'] if incoming else None,
+                                     send_id=rows[0]['local_id'] if not incoming else None)
+                    elif rows:
+                        match['status'] = 'ambiguous' if len(rows) > 1 else 'self_reference'
+                quote['match'] = match
+            # Match metadata also counts toward the quote-context wire budget.
+            while len(json.dumps(result).encode('ascii')) > 32768:
+                result['complete'] = False
+                if 'resolved_output_budget_exceeded' not in result['issues']:
+                    result['issues'].append('resolved_output_budget_exceeded')
+                result['quotes'].pop()
+            return result
+
+    def help_menu(self, row, capture, quotes):
+        # No dispatcher or send occurs here. Only the existing owner handler may
+        # turn this suggestion into its ordinary idempotent final reply.
+        if (row['text'].strip() != '/help' or row['kind'] != 'text'
+                or capture.get('complete') is not True or capture.get('command_context_v1') is not True
+                or quotes.get('status') != 'none'
+                or quotes.get('recorded') is not True or quotes.get('complete') is not True):
+            return None
+        try:
+            enabled = self.probe.dot_journal.cutover.status()['any_new_admission_enabled']
+            mirror = ('dot自动镜像目前关闭。' if enabled is False else
+                      'dot镜像仅按已批准范围运行。')
+        except (AttributeError, KeyError, WeixinError):
+            mirror = 'dot自动镜像状态尚未核实。'
+        text = ('🤖 微信助手 · 使用指南\n\n'
+                '💬 直接说需求\n'
+                '查资料、整理任务、分析内容。\n\n'
+                '🖼️ 图片 / 📄 文件 / 🎬 视频\n'
+                '发来时说一句：希望我做什么。\n'
+                '文件≤20 MiB；超长图建议在dot上传。\n\n'
+                '↩️ 接着聊\n'
+                '可引用消息补充，识别不全时贴上关键文字。\n\n'
+                '⏳ 查看进度\n'
+                '直接问“进度怎么样”；没收到先查，不盲目重发。\n\n'
+                '🔒 仅本人私聊\n'
+                '不支持群聊；' + mirror + '\n\n'
+                '📊 额度：查询当前 Codex 周额度\n\n'
+                '❔ 再看帮助：/help')
+        return {'command': '/help', 'matched': True, 'text': text,
+                'reply_via': 'existing_idempotent_final', 'automatic_send': False,
+                'owner_intent_verification_required': True,
+                'forwarding_provenance': 'not_provided_by_protocol'}
 
     def reply_state(self, message_id):
         """Read committed slots, including legacy final replies, without writes.
@@ -621,6 +795,12 @@ class WeixinStore:
         result["send_id"] = result.pop("message_id")
         result["outgoing_text"] = result.pop("text")
         result["api_result"] = json.loads(result["api_result"]) if result["api_result"] else None
+        with self.lock:
+            mapping = self.db.execute('''SELECT server_id FROM weixin_server_message_ids
+                WHERE account=? AND peer=? AND direction='outgoing' AND local_id=?''',
+                (account['id'], account['owner'], message_id)).fetchone()
+        result['server_message_id'] = mapping['server_id'] if mapping and row['status'] == 'accepted' else None
+        result['server_message_id_source'] = ('send_api_response' if result['server_message_id'] else None)
         result["recipient_confirmed"] = row["recipient_confirmed_at"] is not None
         result["recipient_confirmation_source"] = "owner_report" if result["recipient_confirmed"] else None
         result.update({"accepted": row["status"] == "accepted", "delivered": None})
@@ -666,12 +846,17 @@ class WeixinStore:
             # Waiting finals do not monopolize the queue. Only their own ack
             # blocks them, including its bounded backoff/context/auth wait.
             # An uncertain ack is never resent; the independent final may proceed.
-            row = self.db.execute("""SELECT outgoing.* FROM weixin_outbox outgoing
+            rows = self.db.execute("""SELECT outgoing.* FROM weixin_outbox outgoing
                 WHERE outgoing.status='queued' AND outgoing.next_at<=? AND outgoing.account=?
                 AND NOT (outgoing.kind='reply' AND EXISTS (
                     SELECT 1 FROM weixin_outbox ack WHERE ack.source_message_id=outgoing.message_id
                     AND ack.kind='reply_ack' AND ack.status IN ('queued','preparing','sending','context_required','auth_required')))
-                ORDER BY CASE WHEN outgoing.kind='reply_ack' AND outgoing.ack_origin='system_receipt' THEN 0 ELSE 1 END,outgoing.created_at,outgoing.rowid LIMIT 1""", (now, account["id"])).fetchone()
+                ORDER BY CASE
+                    WHEN outgoing.kind='reply_ack' AND outgoing.ack_origin='system_receipt' THEN 0
+                    WHEN outgoing.kind IN ('reply','reply_ack') AND outgoing.upload_id IS NULL THEN 1
+                    ELSE 2 END,outgoing.created_at,outgoing.rowid""", (now, account["id"]))
+            row = next((item for item in rows if item['kind'] != 'notification' or
+                        not self.aihot_hold_all_notifications and item['message_id'] not in self.aihot_held_notification_ids), None)
             if not row:
                 return False
             if row['attempts'] >= 3:
@@ -712,6 +897,8 @@ class WeixinStore:
             row = self.db.execute('SELECT * FROM weixin_outbox WHERE message_id=?', (row['message_id'],)).fetchone()
             if not account or account['status'] != 'ready' or row['status'] != 'queued':
                 return True
+            if row['kind'] == 'notification' and (self.aihot_hold_all_notifications or row['message_id'] in self.aihot_held_notification_ids):
+                return False
             if row['upload_id']:
                 try:
                     self.probe.outbound.authorized(row['upload_id'])
@@ -729,6 +916,7 @@ class WeixinStore:
                 return True
         outcome, kind, code = "delivery_unknown", "uncertain_api_result", None
         diagnostic = {"response_received": False}
+        response_server_id = None
         try:
             if row['upload_id']:
                 result = self.client.send_items(account, row['peer'], [json.loads(row['item_json'])], row['client_id'], context['token'])
@@ -748,6 +936,11 @@ class WeixinStore:
                           "unexpected_base_resp": "base_resp" in result}
             if any(x is not None and type(x) is not int for x in codes):
                 kind = "invalid_send_status_type"
+            elif -2 in codes and any(x not in (0, None, -2) for x in codes):
+                # A mixed explicit failure must not be hidden by a generic -2.
+                # Preserve the original commitment and stop this send.
+                outcome, kind = "rejected", "send_rejected"
+                code = next(x for x in codes if x not in (0, None, -2))
             elif -14 in codes:
                 outcome, kind, code = "auth_required", "bot_auth_expired", -14
             elif -2 in codes:
@@ -755,10 +948,12 @@ class WeixinStore:
                 error = str(result.get("errmsg") or result.get("msg") or "").lower()
                 if error in ("prepare failed", "unknown error"):
                     outcome, kind = ("context_required", "fresh_inbound_required") if row["attempts"] + 1 < 3 else ("rejected", "retry_limit")
-                elif row["attempts"] + 1 < 3:
-                    outcome, kind = "queued", "rate_limited"
+                elif error in ("rate limit", "rate limited"):
+                    outcome, kind = ("queued", "rate_limited") if row["attempts"] + 1 < 3 else ("rejected", "retry_limit")
                 else:
-                    outcome, kind = "rejected", "retry_limit"
+                    # Project retry policy is deliberately narrower than all
+                    # possible upstream -2 causes. Unknown text grants no retry.
+                    outcome, kind = "rejected", "send_rejected"
             elif any(x not in (0, None) for x in codes):
                 outcome, kind = "rejected", "send_rejected"
                 code = next((x for x in codes if type(x) is int and x != 0), None)
@@ -767,12 +962,16 @@ class WeixinStore:
             else:
                 outcome, kind = "accepted", None
                 diagnostic["acceptance_basis"] = "explicit_zero" if 0 in codes else "omitted_success_codes"
+                response_server_id = server_message_id(result.get('message_id'))
         except WeixinError as error:
             known = {"api_timeout", "api_network_error", "api_http_error", "invalid_api_json", "invalid_api_response",
                      "api_response_too_large", "invalid_api_destination", "non_public_api_address", "invalid_api_endpoint"}
             kind = error.kind if error.kind in known else "unexpected_send_error"
             diagnostic = {"response_received": False, "failure_kind": kind}
             if error.kind == "api_http_error" and type(error.code) is int:
+                # An HTTP response is evidence, not proof of message acceptance.
+                # Keep delivery_unknown and the existing no-resend behavior.
+                diagnostic["response_received"] = True
                 diagnostic["http_status"] = error.code
         except Exception:
             # Timeout/network errors after POST may have delivered; never blindly resend.
@@ -787,6 +986,9 @@ class WeixinStore:
                     outcome, kind = "queued", "fresh_context_available"
             self.db.execute("UPDATE weixin_outbox SET status=?,error_kind=?,server_code=?,accepted_at=?,next_at=?,api_result=? WHERE message_id=?",
                             (outcome, kind, code, self.clock() if outcome == "accepted" else None, now + 5 * (row["attempts"] + 1), encoded(diagnostic), row["message_id"]))
+            if outcome == 'accepted' and response_server_id is not None:
+                self.db.execute('INSERT OR IGNORE INTO weixin_server_message_ids VALUES(?,?,?,?,?)',
+                                (account['id'], row['peer'], 'outgoing', row['message_id'], response_server_id))
             if outcome == "auth_required" or code == -14:
                 self.db.execute("UPDATE weixin_accounts SET status='auth_required',last_error='bot_auth_expired' WHERE id=?", (account["id"],))
             if row['upload_id'] and outcome in ('accepted','rejected','delivery_unknown'):

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "mode": "dry_run",
+  "coordinator_id": null,
+  "usage_provider": "get_usage_limits",
+  "system_ack": false,
+  "old_dot_mirror_writes": false
+}

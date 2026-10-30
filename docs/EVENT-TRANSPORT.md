@@ -1,9 +1,7 @@
 # Event transport candidate
 
-This transport layer was introduced by the local `eventpump1` build. The
-current isolated `eventpump1.reconcile1` candidate retains that layer and adds
-only the [reconciliation projections](EVENT-RECONCILIATION.md). This candidate
-has not been deployed or timed on a real phone. The
+Build `0.5.0+local.video1.dotledger1.eventlease1.p0receipt1.eventpump1` is an
+isolated candidate. It has not been deployed or timed on a real phone. The
 reference is [wx-bot, fixed revision](https://github.com/lawrencewzen/wx-bot/tree/2fd366a60802a230583cebc89add2fb1c660ce8c),
 particularly its durable inbox and onAdd dispatcher. No wx-bot executable or
 consumer is installed. This implementation remains the existing Python bridge.

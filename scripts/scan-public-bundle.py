@@ -19,6 +19,10 @@ HISTORICAL_FIXTURE_MODULES = (
     "event_delivery.py", "dotcutover.py", "transport_timing.py",
     "dotjournal.py", "dotepoch.py", "receipts.py", "media.py",
 )
+P0_RECEIPT_FIXTURE_PATHS = tuple(
+    "probe_tests/fixtures/p0_receipt_baseline/probe/" + module
+    for module in ("dotledger.py", "login.py", "media.py", "outbound.py", "probe.py", "weixin.py")
+)
 HISTORICAL_FIXTURE_PATHS = (
     "probe_tests/fixtures/FIXTURE-PROVENANCE.json",
 ) + tuple(
@@ -29,7 +33,7 @@ HISTORICAL_FIXTURE_PATHS = (
     f"probe_tests/fixtures/{version}/{name}"
     for version in ("localcutover_baseline", "guarded_rollback")
     for name in ("LICENSE", "NOTICE.md")
-)
+) + P0_RECEIPT_FIXTURE_PATHS
 
 
 SOURCE_PATHS = (
@@ -63,8 +67,9 @@ SOURCE_PATHS = (
     "probe_tests/test_fixture_integrity.py",
     "probe_tests/test_journal_receipt_projection.py",
 ) + HISTORICAL_FIXTURE_PATHS
-# Enumerate candidate additions; never discover exportable files with a glob.
-OPTIONAL_PATHS = (
+# These previously optional modules are present in the reviewed public main.
+# This integrated release requires them; a partial source tree must fail closed.
+MERGED_MAIN_PATHS = (
     "probe/transport_timing.py", "probe_tests/test_event_pump.py",
     "probe_tests/test_transport_timing.py", "probe_tests/test_transport_timing_rpc.py", "docs/EVENT-TRANSPORT.md",
     "probe_tests/test_event_delivery_status.py", "probe_tests/test_ledger_reconciliation.py",
@@ -77,6 +82,37 @@ OPTIONAL_PATHS = (
     "docs/RELIABILITY-DEPLOYMENT.md",
     "docs/DOT-MIRROR-JOURNAL.md",
 )
+# Explicit union with the frozen r7 candidate, plus the separately reviewed
+# public operator configuration. Never discover exportable files with a glob.
+R7_ADDITION_PATHS = (
+    "config/owner-coordinator.json.example", "config/setup-approval.json.example",
+    "docs/AUTHORIZATION-HANDOFF.md", "docs/COORDINATOR-WIRING.md",
+    "docs/DELIVERABLES.md", "docs/HELP-APPROVED.txt", "docs/IMAGE-PAGES.md",
+    "docs/INSTALLATION.md", "docs/POCKET-DESIGN-REVIEW.md", "docs/QUOTA-DISPLAY.md",
+    "probe/aihot_email.py", "probe/aihot_notice_consumer/__init__.py",
+    "probe/aihot_notice_consumer/auto_resume.py", "probe/aihot_notice_consumer/bridge_hook.py",
+    "probe/aihot_notice_consumer/control.py", "probe/aihot_notice_consumer/operator_config.py",
+    "probe/aihot_notice_consumer/owner_host.py", "probe/aihot_notice_consumer/relay.py",
+    "probe/aihot_notice_consumer/store_helpers.py", "probe/aihot_notice_consumer/text_b.py",
+    "probe/aihot_notice_consumer/wechat_adapter.py", "probe/deliverable_contract.py",
+    "probe/official_usage_provider.py", "probe/owner_coordinator.py", "probe/quotes.py",
+    "probe/read_projection.py", "probe/usage_display.py", "probe/workflow_contract.py",
+    "probe_tests/aihot_fixture.py", "probe_tests/test_activation_continuity.py",
+    "probe_tests/test_aihot_auto_resume.py", "probe_tests/test_aihot_operator_config.py",
+    "probe_tests/test_aihot_shared_mail.py", "probe_tests/test_attachment_scope_boundaries.py",
+    "probe_tests/test_coordinator_wiring.py", "probe_tests/test_deliverable_contract.py",
+    "probe_tests/test_fixed_command_handler.py", "probe_tests/test_help_menu_copy.py",
+    "probe_tests/test_image_diagnostics.py", "probe_tests/test_image_page_rpc.py",
+    "probe_tests/test_image_pages.py", "probe_tests/test_install_product.py",
+    "probe_tests/test_official_usage_provider_gate.py", "probe_tests/test_original_deliverables.py",
+    "probe_tests/test_read_projection.py", "probe_tests/test_read_projection_safety.py",
+    "probe_tests/test_reply_adapter_boundaries.py", "probe_tests/test_review_regressions.py",
+    "probe_tests/test_safe_status_boundaries.py", "probe_tests/test_send_class_boundaries.py",
+    "probe_tests/test_submission_preflight.py", "probe_tests/test_usage_display.py",
+    "probe_tests/test_workflow_contract.py", "scripts/install-project.py",
+)
+SOURCE_PATHS += MERGED_MAIN_PATHS + R7_ADDITION_PATHS
+OPTIONAL_PATHS = ()  # Compatibility name; all reviewed sources are required in r7.
 BASELINE_NAMES = ("dotledger.py", "login.py", "media.py", "outbound.py", "probe.py", "receipts.py", "weixin.py")
 BASELINE_PREFIX = "probe_tests/fixtures/rollback_baseline/"
 BASELINE_PATHS = tuple(BASELINE_PREFIX + "probe/" + name for name in BASELINE_NAMES) + (

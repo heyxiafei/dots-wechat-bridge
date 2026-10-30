@@ -1,6 +1,6 @@
 # 离线验证范围
 
-这是 singletrial1 + steadyfuture1 的公开分发源码的离线验证范围。依赖二进制、真实数据库、账号配置和私人报告不在包内。每次修改或导出后都重新验证实际目录，旧计数不充当新回执；新增未来来源协议须单独验收，不能用单条试验通过代替持续同步。
+这是公开 main 与 r7 候选合并后的公开源码离线验证范围，保留 singletrial1、steadyfuture1，并包括安装、额度协调者、附件授权、回复恢复及显式宿主配置。依赖二进制、真实数据库、账号配置和私人报告不在包内。每次修改或导出后都验证实际目录，原 r7 候选 464 项离线测试不是本次公开整合版的回执；新增未来来源协议须单独验收，不能用单条试验通过代替持续同步。
 
 ## 复现命令
 
@@ -38,7 +38,9 @@ sh scripts/bootstrap.sh
 
 若系统默认 `python3` 较旧，用 `PYTHON_BIN=/absolute/path/to/python3.11 sh scripts/bootstrap.sh` 替代上面的 bootstrap 行。脚本拒绝覆盖已有 `.venv`；修改发行字节后，重新导出一个全新目录，再按新目录的退出码、失败数和 skip 数记证据。
 
-跨版本测试所需的 `rollback_baseline`、`localcutover_baseline` 与 `guarded_rollback` 均在 `probe_tests/fixtures/`；不再需要兄弟目录或 `WECHAT_COMPAT_BASELINE_DIR`。逐文件哈希及历史版本在 `probe_tests/fixtures/FIXTURE-PROVENANCE.json`，每组保留自己的 LICENSE 和 NOTICE。它们只是静态测试输入，**不可作为生产回退包**。测试仅在临时目录建合成数据库，子进程阻断网络；缺文件、哈希不符、测试失败或 skip 均应如实报告，不能称全套通过。
+跨版本测试所需的 `rollback_baseline`、`localcutover_baseline`、`guarded_rollback` 与 `p0_receipt_baseline` 均在 `probe_tests/fixtures/`；不需要兄弟目录或 `WECHAT_COMPAT_BASELINE_DIR`。逐文件哈希及历史版本在 `probe_tests/fixtures/FIXTURE-PROVENANCE.json`，原三组共 37 文件及各自 LICENSE/NOTICE 保持原字节。新增 p0 组六文件遵循根 LICENSE/NOTICE，其冻结快照来源可核，原始 Git commit 未核实并记为 `null`。四组共 43 文件只是静态测试输入，**不可作为生产回退包**。测试仅在临时目录建合成数据库，子进程阻断网络；缺文件、哈希不符、测试失败或 skip 均应如实报告，不能称全套通过。
+
+发行边界定向检查可运行 `python -B -m unittest probe_tests.test_public_bundle probe_tests.test_fixture_integrity`。它验证固定清单完整性、缺必选模块时拒绝导出、历史夹具和 provenance 篡改拒绝、未知文件与敏感合成反例拒绝，并验证导出 Manifest 的实际大小与哈希。此命令不替代上述最终导出副本的全量测试和 schema 检查。AIHot 测试使用明显合成的宿主配置；真实运行必须由受信任宿主显式提供自己的授权配置，包内不含部署默认身份。新装普通 CLI 默认关闭 AIHot；合成配置测试通过只证明离线行为，旧已启用实例还须按 INSTALLATION.md 核实同一消费者接续，不能把三者混为迁移成功。
 
 旧发行目录已有过测试回执，但本目录的结果应以**当前这一次**的完整命令输出、退出码和 skip 数为准。离线候选的跨进程回转仅证明合成状态下的兼容路径；不证明生产进程已切换或主 Dot 完成读回。扫描零发现还需逐文件人工复核。
 

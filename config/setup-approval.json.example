@@ -1,0 +1,9 @@
+{
+  "approval_reference": null,
+  "isolation_mode": null,
+  "isolation_evidence_reference": null,
+  "profile_sha256": null,
+  "client_sha256": null,
+  "startup_mode": null,
+  "handoff": null
+}

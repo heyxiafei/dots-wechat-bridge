@@ -95,7 +95,7 @@ class SubscriptionLifetimeTests(unittest.TestCase):
     def test_nonexpiring_restart_and_owner_event_deduplication(self):
         sid = self.probe.subscribe(self.params(None, name="weixin.message"))["id"]
         self.probe.weixin.bind_confirmed({"status": "confirmed", "ilink_bot_id": "fixture-bot",
-            "ilink_user_id": "fixture-owner", "bot_token": "synthetic-secret-fixture-0000000000000000",
+            "ilink_user_id": "fixture-owner", "bot_token": "fixture-token",
             "baseurl": "https://ilinkai.weixin.qq.com"})
         self.probe.weixin.ingest(self.probe.weixin.account(), {"msgs": [{
             "message_id": "fixture-source", "from_user_id": "fixture-owner", "to_user_id": "fixture-bot",
@@ -113,6 +113,60 @@ class SubscriptionLifetimeTests(unittest.TestCase):
         self.assertEqual(event, dict(self.probe.db.execute("SELECT id,sub_id,message_id FROM pings").fetchone()))
         self.assertTrue(self.probe.deliver_once())
         self.assertFalse(self.probe.deliver_once())
+
+    def test_expired_owner_subscription_preserves_queue_until_verified_same_id_refresh(self):
+        params = self.params(1000, name='weixin.message')
+        sid = self.probe.subscribe(params)['id']
+        self.probe.weixin.bind_confirmed({'status':'confirmed', 'ilink_bot_id':'fixture-bot',
+            'ilink_user_id':'fixture-owner', 'bot_token':'fixture-token',
+            'baseurl':'https://ilinkai.weixin.qq.com'})
+        def ingest(source):
+            self.probe.weixin.ingest(self.probe.weixin.account(), {'msgs':[{
+                'message_id':source, 'from_user_id':'fixture-owner', 'to_user_id':'fixture-bot',
+                'message_type':1, 'message_state':2, 'create_time_ms':self.now * 1000,
+                'item_list':[{'type':1,'text_item':{'text':'synthetic'}}]}]})
+            self.assertEqual(self.probe.queue_weixin_messages(), 1)
+        ingest('original-source')
+        original = dict(self.probe.db.execute('SELECT * FROM pings').fetchone())
+        self.probe.close()
+        self.now += 2  # Natural TTL expiry, still inside the old challenge cache.
+        self.probe = self.open_probe()
+        self.probe.recover_event_deliveries()
+        calls = len(self.calls)
+        self.assertFalse(self.probe.deliver_once())
+        self.assertEqual(self.probe.event_next_wait(), .5)
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(dict(self.probe.db.execute('SELECT * FROM pings').fetchone()), original)
+        # An unrelated event is not blocked behind the paused owner event.
+        self.probe.subscribe(self.params(None))
+        unrelated = self.probe.emit()
+        self.assertTrue(self.probe.deliver_once())
+        self.assertEqual(self.calls[-1][1]['eventId'], unrelated['event_id'])
+        self.assertFalse(self.probe.deliver_once())
+        self.assertEqual(dict(self.probe.db.execute('SELECT * FROM pings WHERE id=?', (original['id'],)).fetchone()), original)
+        verifications = sum(body.get('type') == 'verification' for _, body, _ in self.calls)
+        self.assertEqual(self.probe.subscribe(params)['id'], sid)
+        self.assertEqual(sum(body.get('type') == 'verification' for _, body, _ in self.calls), verifications + 1)
+        self.assertTrue(self.probe.deliver_once())
+        self.assertFalse(self.probe.deliver_once())
+        self.assertEqual(sum(body.get('eventId') == original['id'] for _, body, _ in self.calls), 1)
+        ingest('explicitly-unsubscribed-source')
+        self.probe.unsubscribe(params)
+        calls = len(self.calls)
+        self.assertFalse(self.probe.deliver_once())
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(self.probe.db.execute("SELECT status FROM pings WHERE name='weixin.message' AND id!=?", (original['id'],)).fetchone()[0], 'cancelled')
+        self.assertEqual(self.probe.subscribe(params)['id'], sid)
+        self.assertFalse(self.probe.deliver_once())  # Cancelled work never revives.
+        ingest('revocation-source-one')
+        ingest('revocation-source-two')
+        self.event_hook = lambda: (410, b'{}')
+        self.assertTrue(self.probe.deliver_once())
+        self.assertEqual(self.row(sid)['expires'], 0)
+        calls = len(self.calls)
+        self.assertTrue(self.probe.deliver_once())
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(self.probe.db.execute("SELECT status FROM pings WHERE name='weixin.message' ORDER BY rowid DESC LIMIT 1").fetchone()[0], 'cancelled')
 
     def test_nonexpiring_synthetic_events_and_signature_rotation(self):
         sid = self.probe.subscribe(self.params(None))["id"]

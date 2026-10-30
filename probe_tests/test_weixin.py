@@ -9,7 +9,7 @@ from probe.probe import Probe, RpcError
 from probe.weixin import MESSAGE_EVENT, WeixinError, api_base, public_ip, parse_api_json
 
 SECRET = "whsec_" + base64.b64encode(b"b" * 32).decode()
-OWNER, ACCOUNT = "wxid_fixture_owner", "bot-test"
+OWNER, ACCOUNT = "fixture-owner@im.wechat", "bot-test"
 
 
 class FakeIlink:
@@ -64,36 +64,6 @@ class WeixinTests(unittest.TestCase):
         return self.probe.subscribe({"name": name, "arguments": {}, "delivery": {"mode": "webhook",
             "url": "https://callbacks.example.com/synthetic-callback", "secret": SECRET}})
 
-    def test_owner_group_echo_filter_and_lossless_dedup(self):
-        good = self.message()
-        self.assertEqual(self.ingest(good, self.message("2", from_user_id="other"),
-            self.message("3", group_id="group"), self.message("4", message_type=2),
-            self.message("5", to_user_id="other-bot")), 1)
-        self.assertEqual(self.ingest(good), 0)
-        mid = self.inbound_id()
-        result = self.probe.weixin.read_message(mid)
-        self.assertEqual(result["text"], "用户原文\n你好")
-        self.assertEqual(self.probe.weixin.account()["cursor"], "fixture-cursor")
-        safe = json.dumps(result) + json.dumps(self.probe.weixin.status())
-        for secret in ("fixture-context", "fixture-bot-token", OWNER):
-            self.assertNotIn(secret, safe)
-
-    def test_restart_persists_cursor_and_selects_latest_context_at_send(self):
-        self.ingest(self.message(context="old-context"))
-        mid = self.inbound_id()
-        self.probe.weixin.queue_reply(mid, "回复原文")
-        self.now += 1
-        self.ingest(self.message("second", context="new-context"), cursor="new-cursor")
-        self.ingest(self.message("older", context="obsolete-context", create_time_ms=(self.now - 10) * 1000))
-        self.probe.close(); self.probe = self.open_probe()
-        self.assertEqual(self.probe.weixin.account()["cursor"], "fixture-cursor")
-        self.assertTrue(self.probe.weixin.send_once())
-        self.assertEqual(self.client.sent[0][3], "new-context")
-        status = self.probe.weixin.send_status(mid)
-        self.assertEqual(status["outgoing_text"], "回复原文")
-        self.assertTrue(status["accepted"])
-        self.assertIsNone(status["delivered"])
-
     def test_poll_timeout_restart_duplicate_batch_keeps_one_event_and_unknown_send(self):
         """A lost poll response and a repeated batch must not duplicate an unknown reply."""
         source = "poll-restart-duplicate"
@@ -146,6 +116,36 @@ class WeixinTests(unittest.TestCase):
             self.assertEqual(self.probe.weixin.send_status(mid)["status"], "delivery_unknown")
             self.assertEqual(self.probe.db.execute("SELECT count(*) FROM weixin_outbox WHERE message_id=?", (mid,)).fetchone()[0], 1)
             self.assertEqual(len(self.client.sent), 1)
+
+    def test_owner_group_echo_filter_and_lossless_dedup(self):
+        good = self.message()
+        self.assertEqual(self.ingest(good, self.message("2", from_user_id="other"),
+            self.message("3", group_id="group"), self.message("4", message_type=2),
+            self.message("5", to_user_id="other-bot")), 1)
+        self.assertEqual(self.ingest(good), 0)
+        mid = self.inbound_id()
+        result = self.probe.weixin.read_message(mid)
+        self.assertEqual(result["text"], "用户原文\n你好")
+        self.assertEqual(self.probe.weixin.account()["cursor"], "fixture-cursor")
+        safe = json.dumps(result) + json.dumps(self.probe.weixin.status())
+        for secret in ("fixture-context", "fixture-bot-token", OWNER):
+            self.assertNotIn(secret, safe)
+
+    def test_restart_persists_cursor_and_selects_latest_context_at_send(self):
+        self.ingest(self.message(context="old-context"))
+        mid = self.inbound_id()
+        self.probe.weixin.queue_reply(mid, "回复原文")
+        self.now += 1
+        self.ingest(self.message("second", context="new-context"), cursor="new-cursor")
+        self.ingest(self.message("older", context="obsolete-context", create_time_ms=(self.now - 10) * 1000))
+        self.probe.close(); self.probe = self.open_probe()
+        self.assertEqual(self.probe.weixin.account()["cursor"], "fixture-cursor")
+        self.assertTrue(self.probe.weixin.send_once())
+        self.assertEqual(self.client.sent[0][3], "new-context")
+        status = self.probe.weixin.send_status(mid)
+        self.assertEqual(status["outgoing_text"], "回复原文")
+        self.assertTrue(status["accepted"])
+        self.assertIsNone(status["delivered"])
 
     def test_two_event_subscriptions_and_idempotent_reply_roundtrip(self):
         test_sub = self.subscribe("test.ping")

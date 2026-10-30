@@ -3,6 +3,7 @@ import fcntl
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -68,7 +69,11 @@ class SetupTests(unittest.TestCase):
         scripts=self.root/'scripts'; scripts.mkdir()
         shutil.copy2(ROOT/'scripts/install-service.sh',scripts/'install-service.sh')
         (self.root/'.venv/bin').mkdir(parents=True)
-        (self.root/'.venv/bin/python').symlink_to(sys.executable)
+        # A copied standalone Python binary needs its own pyvenv.cfg. Keep this
+        # fixture anchored to the actual interpreter instead of a broken symlink.
+        interpreter=self.root/'.venv/bin/python'
+        interpreter.write_text('#!/bin/sh\nexec '+shlex.quote(sys.executable)+' "$@"\n')
+        interpreter.chmod(0o755)
         (self.root/'bin').mkdir()
         client=self.root/'bin/tunnel-client'; client.write_text('#!/bin/sh\nexit 0\n'); client.chmod(0o755)
         commands=self.root/'mock-bin'; commands.mkdir()

@@ -184,12 +184,58 @@
       "bytes": 36592,
       "path": "probe_tests/fixtures/rollback_baseline/probe/weixin.py",
       "sha256": "310f3044865edfda35d53706f90a7aa01f5c86405421ac1466624580aaf15aa1"
+    },
+    {
+      "bytes": 13818,
+      "path": "probe_tests/fixtures/p0_receipt_baseline/probe/dotledger.py",
+      "sha256": "8f3e9003a50f3821e052adc802884f8ab9d5a067992d82444cdc86c1e4dc64bf"
+    },
+    {
+      "bytes": 3549,
+      "path": "probe_tests/fixtures/p0_receipt_baseline/probe/login.py",
+      "sha256": "f7e16c15956ee251c333f00942c6204216fadbc04ea611a263aca1e537ccd83a"
+    },
+    {
+      "bytes": 24217,
+      "path": "probe_tests/fixtures/p0_receipt_baseline/probe/media.py",
+      "sha256": "2a9d40c6acba3910d0f50d76280a6cff48c8d66654b4fde9160ae18df623cbb4"
+    },
+    {
+      "bytes": 23497,
+      "path": "probe_tests/fixtures/p0_receipt_baseline/probe/outbound.py",
+      "sha256": "05c1fd8bf032b231fa9eebfe5dcfdd230c1827ff9f41a7eac07573bc15ce18f1"
+    },
+    {
+      "bytes": 43903,
+      "path": "probe_tests/fixtures/p0_receipt_baseline/probe/probe.py",
+      "sha256": "1ea311e5cd23c2aebe9bbf57cadd5ad68cfb7855d6704c90c9613716106446bf"
+    },
+    {
+      "bytes": 34324,
+      "path": "probe_tests/fixtures/p0_receipt_baseline/probe/weixin.py",
+      "sha256": "7ebe60986c250b0c4ff5f03bb70a340e5b7f67e5f92395e3d00df0e2995acc9f"
     }
   ],
   "purpose": "Static test-only historical source; never deploy",
   "source_versions": {
     "guarded_rollback": "0.5.0+local.video1.dotledger1.eventlease1.p0receipt1.eventpump1.reconcile1.mirrorjournal1.localcutover1.guardedrollback1",
     "localcutover_baseline": "0.5.0+local.video1.dotledger1.eventlease1.p0receipt1.eventpump1.reconcile1.mirrorjournal1.localcutover1",
-    "rollback_baseline": "0.5.0+local.video1.dotledger1.eventlease1.p0receipt1"
+    "rollback_baseline": "0.5.0+local.video1.dotledger1.eventlease1.p0receipt1",
+    "p0_receipt_baseline": "0.5.0+local.video1.dotledger1.eventlease1"
+  },
+  "source_snapshots": {
+    "p0_receipt_baseline": {
+      "source_commit": null,
+      "source_commit_status": "Original source commit is not established; do not substitute the public main commit.",
+      "verified_snapshot": "r7 offline candidate, frozen 2026-10-30; the six files match the reviewed r5 and r6 snapshots as well.",
+      "source_relative_directory": "probe_tests/fixtures/p0_receipt_baseline/probe",
+      "verification": "Complete file bytes match the frozen r7 source SHA-256 values recorded below.",
+      "license_files": [
+        "LICENSE",
+        "NOTICE.md"
+      ],
+      "license_scope": "Project MIT source, retaining the root copyright and third-party notices; no separate fixture license file or extra rights are claimed.",
+      "purpose": "Static compatibility test input; never deploy or use as a production rollback package."
+    }
   }
 }

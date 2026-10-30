@@ -17,7 +17,7 @@ class FixtureIntegrityTests(unittest.TestCase):
     def test_bundled_compatibility_sources_match_reviewed_hashes(self):
         metadata = json.loads(MANIFEST.read_text())
         entries = metadata["files"]
-        self.assertEqual(len(entries), 37)
+        self.assertEqual(len(entries), 43)
         self.assertEqual(len({entry["path"] for entry in entries}), len(entries))
         self.assertEqual({entry["path"] for entry in entries},
                          (set(SCAN.HISTORICAL_FIXTURE_PATHS) - {"probe_tests/fixtures/FIXTURE-PROVENANCE.json"})
@@ -27,7 +27,7 @@ class FixtureIntegrityTests(unittest.TestCase):
             self.assertGreaterEqual(len(relative.parts), 4)
             self.assertFalse(relative.is_absolute() or ".." in relative.parts)
             self.assertEqual(relative.parts[:2], ("probe_tests", "fixtures"))
-            self.assertIn(relative.parts[2], ("rollback_baseline", "localcutover_baseline", "guarded_rollback"))
+            self.assertIn(relative.parts[2], ("rollback_baseline", "localcutover_baseline", "guarded_rollback", "p0_receipt_baseline"))
             path = ROOT / relative
             self.assertTrue(path.is_file() and not path.is_symlink(), entry["path"])
             content = path.read_bytes()
@@ -36,6 +36,18 @@ class FixtureIntegrityTests(unittest.TestCase):
         for version, expected in metadata["source_versions"].items():
             source = (ROOT / "probe_tests/fixtures" / version / "probe/probe.py").read_text()
             self.assertIn("BUILD_VERSION = '" + expected + "'", source)
+
+    def test_p0_source_is_test_only_and_does_not_claim_an_unverified_commit(self):
+        metadata = json.loads(MANIFEST.read_text())
+        origin = metadata["source_snapshots"]["p0_receipt_baseline"]
+        self.assertIsNone(origin["source_commit"])
+        self.assertIn("never deploy", origin["purpose"])
+        self.assertEqual(origin["source_relative_directory"],
+                         "probe_tests/fixtures/p0_receipt_baseline/probe")
+        self.assertEqual(origin["license_files"], ["LICENSE", "NOTICE.md"])
+        self.assertEqual(len(SCAN.P0_RECEIPT_FIXTURE_PATHS), 6)
+        for relative in origin["license_files"]:
+            self.assertTrue((ROOT / relative).is_file())
 
 
 if __name__ == "__main__":

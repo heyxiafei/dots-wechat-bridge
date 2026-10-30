@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 from probe.probe import Probe, run_weixin_sender
 
-BASELINE = Path(__file__).resolve().parent / 'fixtures' / 'rollback_baseline'
+BASELINE = Path(__file__).resolve().parent / 'fixtures/p0_receipt_baseline'
 RESULTS = {}
 ACTIVATION = '00000000-0000-0000-0000-000000000000'
 

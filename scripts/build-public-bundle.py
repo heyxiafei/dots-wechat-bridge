@@ -58,7 +58,7 @@ SYNTHETIC_UUIDS = (
 )
 NORMALIZED_CREDENTIAL = "synthetic-secret-fixture-0000000000000000"
 HISTORICAL_PROVENANCE = "probe_tests/fixtures/FIXTURE-PROVENANCE.json"
-REVIEWED_HISTORICAL_PROVENANCE_SHA256 = "4fbbe806033654e2f15253104b370258e1230bbd444a6410eb3295372a4962a3"
+REVIEWED_HISTORICAL_PROVENANCE_SHA256 = "a6a666c54d095f5b73f36d976768a75915f2be848c3ca1a358737df01197791c"
 
 
 class BuildFailure(Exception):
@@ -222,6 +222,12 @@ def collect(source, baseline):
     manifest = {
         "format_version": 1,
         "purpose": "public source bundle; no deployment or end-to-end success claim",
+        "release_basis": {
+            "public_repository": "heyxiafei/dots-wechat-bridge",
+            "public_main_commit": "48709d9fc72e9bdf4037c0ae907a75a376fd6ff5",
+            "candidate": "r7 offline candidate plus reviewed public integration changes",
+            "scope": "Explicit union of reviewed public main and r7 source paths, plus public operator configuration and tests",
+        },
         "source_policy": "fixed allowlist; no Git history, runtime, state, credentials, binaries or network",
         "fixture_policy": "whole-file reviewed SHA256 and counts required for legacy replacement; clean public fixtures unchanged; core unchanged",
         "normalizations": normalizations,

@@ -28,7 +28,7 @@
 
 ## C：另行审议的持续未来来源候选
 
-本节不授权生产动作。部署前必须对当前**准确原实例**重新核对文件/数据库基线、完整兼容回退方案、主 Dot 工具目录与同 scope 内容读回、原自动化旧直写分支限制、本人对持续准入及旧远端重复风险的批准。当前生产只有 singletrial1，不能把此源码目录、离线迁移或新 schema 当作已部署。预计运行差异涉及 `probe/probe.py`、`probe/dotcutover.py`、`probe/dotjournal.py` 与 `docs/mcp-schema.json`；实际文件清单以现场字节差异为准，不整包覆盖。
+本节不授权生产动作。部署前必须对当前**准确原实例**重新核对文件/数据库基线、完整兼容回退方案、主 Dot 工具目录与同 scope 内容读回、原自动化旧直写分支限制、本人对持续准入及旧远端重复风险的批准。若现场生产仍为 singletrial1，不能把此源码目录、离线迁移或新 schema 当作已部署；实际生产版本必须从已核实实例读回。预计运行差异涉及 `probe/probe.py`、`probe/dotcutover.py`、`probe/dotjournal.py` 与 `docs/mcp-schema.json`；实际文件清单以现场字节差异为准，不整包覆盖。
 
 新候选只在已选 trial 正式 close、原文和实际 final 的 caller-reported 正向读回齐备且无该来源已授权/unknown 时允许另行启用未来代际。每代限制来源数，暂停/close 后新许可停止，旧 permit/unknown 仍须按原 ID 对账；恢复新建代际，间隙消息不补。保留单条 trial、旧来源 guard、媒体逐件状态及全部数据库增量，不恢复旧库或调用旧 bulk enable。真实部署和每次准入须另行限定批准，远端 fence 仍为 false。
 

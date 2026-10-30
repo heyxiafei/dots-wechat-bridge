@@ -12,10 +12,10 @@ import sys
 import tempfile
 
 try:
-    from .probe import Probe
+    from .probe import Probe, acquire_worker_lock
     from .weixin import WeixinError, api_base
 except ImportError:
-    from probe import Probe
+    from probe import Probe, acquire_worker_lock
     from weixin import WeixinError, api_base
 
 
@@ -43,7 +43,19 @@ def main():
     args = parser.parse_args()
     os.umask(0o077)
     directory = Path(args.state_dir)
-    probe = Probe(directory)
+    # QR/login runs in another process. It cannot update a live worker's
+    # in-memory owner epoch, so both operations require that worker to stop.
+    try:
+        worker_lock = acquire_worker_lock(directory)
+    except BlockingIOError:
+        print(json.dumps({"error": "worker_running_stop_before_login"}))
+        return 1
+    try:
+        probe = Probe(directory)
+    except Exception:
+        worker_lock.close()
+        print(json.dumps({"error": "login_operation_failed"}))
+        return 1
     login_file, display_file = directory / "weixin-login.json", directory / "weixin-qr-content.txt"
     try:
         if args.start:
@@ -83,6 +95,7 @@ def main():
         return 1
     finally:
         probe.close()
+        worker_lock.close()
     return 0
 
 

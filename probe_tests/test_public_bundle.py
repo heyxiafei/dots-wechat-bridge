@@ -139,6 +139,26 @@ class PublicScannerTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 SCAN.validate_allowed_paths((value,))
 
+    def test_r7_required_source_and_operator_configuration_are_exported(self):
+        required = {
+            "probe/owner_coordinator.py", "probe/official_usage_provider.py",
+            "probe/workflow_contract.py", "probe/read_projection.py",
+            "probe/aihot_notice_consumer/operator_config.py",
+            "probe_tests/aihot_fixture.py", "probe_tests/test_aihot_operator_config.py",
+            "probe_tests/test_attachment_scope_boundaries.py",
+            "probe_tests/test_submission_preflight.py",
+            "config/owner-coordinator.json.example", "config/setup-approval.json.example",
+            "scripts/install-project.py", "docs/INSTALLATION.md",
+            "docs/COORDINATOR-WIRING.md", "docs/QUOTA-DISPLAY.md",
+            "docs/POCKET-DESIGN-REVIEW.md",
+        }
+        self.assertTrue(required <= set(SCAN.SOURCE_PATHS))
+        self.assertEqual(len(SCAN.SOURCE_PATHS), len(set(SCAN.SOURCE_PATHS)))
+        self.assertEqual((), SCAN.OPTIONAL_PATHS)
+        for relative in ("runtime/profile.yaml", "evidence/report.json", "bin/tunnel-client",
+                         "probe/aihot_notice_consumer/unreviewed.py"):
+            self.assertTrue(SCAN.path_findings(relative))
+
 
 class PublicBuilderTests(unittest.TestCase):
     def setUp(self):
@@ -185,6 +205,14 @@ class PublicBuilderTests(unittest.TestCase):
         self.assertTrue(BUILD.build(output, fixture, dry_run=True)["ok"])
         manifest = json.loads((output / "PUBLIC-BUNDLE-MANIFEST.json").read_text())
         self.assertNotIn(str(self.parent), json.dumps(manifest))
+        self.assertEqual("48709d9fc72e9bdf4037c0ae907a75a376fd6ff5",
+                         manifest["release_basis"]["public_main_commit"])
+        expected_paths = set(SCAN.SOURCE_PATHS) | set(SCAN.BASELINE_PATHS)
+        self.assertEqual(expected_paths, {item["path"] for item in manifest["files"]})
+        for item in manifest["files"]:
+            data = (output / item["path"]).read_bytes()
+            self.assertEqual(len(data), item["bytes"], item["path"])
+            self.assertEqual(hashlib.sha256(data).hexdigest(), item["sha256"], item["path"])
         entry = next(item for item in manifest["files"] if item["path"] == "LICENSE")
         self.assertEqual(hashlib.sha256(original).hexdigest(), entry["sha256"])
 
@@ -278,6 +306,37 @@ class PublicBuilderTests(unittest.TestCase):
         with self.assertRaises(BUILD.BuildFailure) as caught:
             BUILD.build(self.source, self.baseline, dry_run=True)
         self.assertEqual({"fixture_hash_mismatch"}, categories(caught.exception.findings))
+
+    def test_missing_r7_runtime_module_is_not_silently_omitted(self):
+        relative = "probe/owner_coordinator.py"
+        path = self.source / relative
+        if path.exists():
+            path.unlink()
+        with self.assertRaises(BUILD.BuildFailure) as caught:
+            BUILD.build(self.source, self.baseline, dry_run=True)
+        self.assertEqual([{"path": relative, "line": 0,
+                           "category": "missing_or_unreadable_source"}], caught.exception.findings)
+
+    def test_p0_fixture_mutation_cannot_be_exported(self):
+        relative = "probe_tests/fixtures/p0_receipt_baseline/probe/probe.py"
+        self.write(self.source, relative, b"# changed historical input\n")
+        with self.assertRaises(BUILD.BuildFailure) as caught:
+            BUILD.build(self.source, self.baseline, dry_run=True)
+        self.assertEqual({"fixture_hash_mismatch"}, categories(caught.exception.findings))
+
+    def test_provenance_cannot_authorize_replaced_historical_bytes(self):
+        relative = "probe_tests/fixtures/p0_receipt_baseline/probe/probe.py"
+        data = b"# substituted historical input\n"
+        self.write(self.source, relative, data)
+        metadata = json.loads((self.source / BUILD.HISTORICAL_PROVENANCE).read_text())
+        for entry in metadata["files"]:
+            if entry["path"] == relative:
+                entry.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+        self.write(self.source, BUILD.HISTORICAL_PROVENANCE,
+                   (json.dumps(metadata, sort_keys=True) + "\n").encode())
+        with self.assertRaises(BUILD.BuildFailure) as caught:
+            BUILD.build(self.source, self.baseline, dry_run=True)
+        self.assertEqual({"fixture_provenance_changed"}, categories(caught.exception.findings))
 
 
 if __name__ == "__main__":
