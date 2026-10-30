@@ -671,9 +671,9 @@
       "sha256": "aad17367d2afadcf7df7477ce47769c77b055d5aaf05b1488a9003fa850bb6e8"
     },
     {
-      "bytes": 7809,
+      "bytes": 8654,
       "path": "probe_tests/test_install_product.py",
-      "sha256": "d5a8d9f6dc88cf88714ce55ad45c93c7993ef8051a04cc497e8e7b3daa43fd92"
+      "sha256": "bc1a188124d66b36a00275a41b148cf41b8d55f95db546a34ed581fbed750c53"
     },
     {
       "bytes": 3481,
@@ -861,9 +861,9 @@
       "sha256": "b580ca91c7b349239d05839a028683ea78cdbbc473b1dca52aef4cdf61d1dbd5"
     },
     {
-      "bytes": 20029,
+      "bytes": 20209,
       "path": "scripts/install-project.py",
-      "sha256": "15fb1f593fe2e2a2335eea34d52540239aba422a09905574d1e9b82dd4d5bfbe"
+      "sha256": "780fc9c2dee20478c28c6efa3f594aff49ecb938243400aaf45659e574821d8e"
     },
     {
       "bytes": 1599,

@@ -68,6 +68,20 @@ class InstallationTests(unittest.TestCase):
             p=self.root/name; p.parent.mkdir(parents=True,exist_ok=True); p.write_text('fixture')
         self.assertEqual([str(p.relative_to(self.root)) for p in self.install.source_files(self.root)], ['probe/ok.py'])
 
+    def test_source_copy_preserves_public_manifest_and_only_bundled_skill(self):
+        expected = {'.gitignore', 'PUBLIC-BUNDLE-MANIFEST.json',
+                    'skills/dot-wechat-bridge/SKILL.md',
+                    'skills/dot-wechat-bridge/LICENSE',
+                    'skills/dot-wechat-bridge/references/setup.md'}
+        for name in expected | {'skills/unrelated/SKILL.md',
+                                 'skills/dot-wechat-bridge/runtime/private.txt',
+                                 'skills/dot-wechat-bridge/__pycache__/cached.pyc'}:
+            path = self.root/name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('synthetic packaging fixture')
+        copied = {str(p.relative_to(self.root)) for p in self.install.source_files(self.root)}
+        self.assertEqual(copied, expected)
+
     def test_activation_requires_exact_approval_and_isolation_before_any_login(self):
         (self.root/'runtime').mkdir()
         (self.root/'runtime/setup-approval.json').write_text('{}')

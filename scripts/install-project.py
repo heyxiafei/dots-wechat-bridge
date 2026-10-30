@@ -19,8 +19,9 @@ import time
 import venv
 
 ROOT = Path(__file__).resolve().parents[1]
-ROOT_FILES = {'AGENTS.md', 'README.md', 'LICENSE', 'NOTICE.md', 'requirements.lock', 'requirements.txt'}
-SOURCE_DIRS = {'probe', 'probe_tests', 'scripts', 'config', 'docs', 'licenses'}
+ROOT_FILES = {'AGENTS.md', 'README.md', 'LICENSE', 'NOTICE.md', 'requirements.lock', 'requirements.txt',
+              '.gitignore', 'PUBLIC-BUNDLE-MANIFEST.json'}
+SOURCE_DIRS = {'probe', 'probe_tests', 'scripts', 'config', 'docs', 'licenses', 'skills'}
 
 
 def write_json(path, value):
@@ -34,6 +35,8 @@ def source_files(root):
     for path in sorted(root.rglob('*')):
         rel = path.relative_to(root)
         if rel.parts[0] not in SOURCE_DIRS and str(rel) not in ROOT_FILES:
+            continue
+        if rel.parts[0] == 'skills' and rel.parts[:2] != ('skills', 'dot-wechat-bridge'):
             continue
         if any(p in ('__pycache__', '.git', '.venv', 'runtime', 'secrets') for p in rel.parts):
             continue
