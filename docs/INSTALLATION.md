@@ -20,6 +20,8 @@ python3.11 scripts/install-project.py install --prefix /absolute/new/project --t
 
 ## 首次接入：由安装方准备，必须有具体批准
 
+基础 MCP 到达诊断可使用 [限时只读入口](CONNECTION-PROBE.md)。它不需要预先取得订阅摘要，不打开运行数据库，也不启用微信收发；默认仅计划。实际 Tunnel 访问仍需获准，临时工具目录不得用于更新原 App。该入口只验证传输，尚未解决后续原订阅握手和有限发送入口的前置条件。
+
 先一次运行只读综合预检，再准备二维码：
 
 ```sh

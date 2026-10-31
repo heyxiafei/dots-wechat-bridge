@@ -56,6 +56,11 @@
       "sha256": "9fdd24e3e780bc2f00b535632d38096d78e78e16bb9ce32533cd4824e71be15b"
     },
     {
+      "bytes": 3693,
+      "path": "docs/CONNECTION-PROBE.md",
+      "sha256": "06ba2149f8c3d6c627eccf3bc5a2f3be919ea7bf27be019644aa75238495dff4"
+    },
+    {
       "bytes": 8474,
       "path": "docs/COORDINATOR-WIRING.md",
       "sha256": "d5d9073b0ef1b4e100a4eb3cf91fe63cc7c66575b940ec4e03da2036a9ce0b0b"
@@ -96,9 +101,9 @@
       "sha256": "18cac41a9524e36635477493a12994216a47bb172f34033abb21474ff15ea1c7"
     },
     {
-      "bytes": 14807,
+      "bytes": 15177,
       "path": "docs/INSTALLATION.md",
-      "sha256": "66af5015f63bd39c2c41c41fd861600a014a6f608284fb55f9fa177cd4c98c58"
+      "sha256": "e170dc564c5c319fbface892d2043ff66841e11dd0c360011cb889208166a4b4"
     },
     {
       "bytes": 4512,
@@ -249,6 +254,11 @@
       "bytes": 22272,
       "path": "probe/bounded_dot_stdio.py",
       "sha256": "946c81e6fd17c7d0723c6aabf2a8dbc7546ac4e2d1f1ef3b96ad73b57cc6654b"
+    },
+    {
+      "bytes": 9617,
+      "path": "probe/connection_probe.py",
+      "sha256": "7b8203ba30e0e05a0db1635abbd150c1fc7c157eb8b1acbe1a6cc0b754e014a8"
     },
     {
       "bytes": 8302,
@@ -616,6 +626,11 @@
       "sha256": "915cbf843bef2f0be894113a782dc54a0b8c01febb6535efad38ba98160ee407"
     },
     {
+      "bytes": 11305,
+      "path": "probe_tests/test_connection_probe.py",
+      "sha256": "d34a43e9a52cd287293509b895ce261dd9cb137c65686d3def39788148b58808"
+    },
+    {
       "bytes": 11603,
       "path": "probe_tests/test_coordinator_wiring.py",
       "sha256": "bc239956e2a90ea25f0c322ec7d03696627a7a956954e5a69a086683738e42a2"
@@ -896,6 +911,11 @@
       "sha256": "5206bfc1510c40efc2d21b46fd76ea476c47d53cbb1d719adc07a7fe6076ef38"
     },
     {
+      "bytes": 1347,
+      "path": "scripts/connection-probe.py",
+      "sha256": "19cd1981f57e27ab7c21179cefd3109a6ea9291aafcb840f2c40f4a88217f932"
+    },
+    {
       "bytes": 798,
       "path": "scripts/generate-schema.py",
       "sha256": "b580ca91c7b349239d05839a028683ea78cdbbc473b1dca52aef4cdf61d1dbd5"
@@ -946,9 +966,9 @@
       "sha256": "2e6cf969d2272838117c293ed9a8e44f1acb60759b7452ef5394d620cba0ccff"
     },
     {
-      "bytes": 16809,
+      "bytes": 16945,
       "path": "scripts/scan-public-bundle.py",
-      "sha256": "fdfd883a45c9d685cde512773db527da97b418c747545600016018b3548767a4"
+      "sha256": "8b399a9168b9ba1cfc104206485660cc0060e53ebe232ce747ef580eba18957d"
     },
     {
       "bytes": 1610,
