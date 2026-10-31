@@ -21,9 +21,9 @@
       "sha256": "aed8be893bb4c0aa9fbd9496ac23d494b97e8ff49767fe942b695c1f51591480"
     },
     {
-      "bytes": 20868,
+      "bytes": 22043,
       "path": "README.md",
-      "sha256": "543df0f3edd00776e3a9766156f7acaaa9da7d901cdf16e6225097a37dcd7db8"
+      "sha256": "db522a332e3fbcfc246661691344d0315662592153efe5a40bf74fd37c3e4209"
     },
     {
       "bytes": 566,
@@ -49,6 +49,11 @@
       "bytes": 2438,
       "path": "docs/AUTHORIZATION-HANDOFF.md",
       "sha256": "f84ebdac28e36802508cf9247c6df3943d5f17305b0577150feaeae309e44295"
+    },
+    {
+      "bytes": 5035,
+      "path": "docs/BOUNDED-DOT-STDIO.md",
+      "sha256": "9fdd24e3e780bc2f00b535632d38096d78e78e16bb9ce32533cd4824e71be15b"
     },
     {
       "bytes": 8474,
@@ -91,14 +96,19 @@
       "sha256": "18cac41a9524e36635477493a12994216a47bb172f34033abb21474ff15ea1c7"
     },
     {
-      "bytes": 10833,
+      "bytes": 14807,
       "path": "docs/INSTALLATION.md",
-      "sha256": "47bd535dceaa6567f977a89a037bcf46340f9af012f969e04b7b1ced3a74030f"
+      "sha256": "66af5015f63bd39c2c41c41fd861600a014a6f608284fb55f9fa177cd4c98c58"
     },
     {
       "bytes": 4512,
       "path": "docs/MEDIA.md",
       "sha256": "4ace3a237ff92a0df478b4387e3ed9f37304c0f22ff5a1ea5098d33c621f3bf6"
+    },
+    {
+      "bytes": 5079,
+      "path": "docs/NEW-MESSAGE-CHECK.md",
+      "sha256": "d5386094d205d21edd31a8b288532f58114cd990647549260c3c1f0db2d57b0c"
     },
     {
       "bytes": 8622,
@@ -236,6 +246,11 @@
       "sha256": "f34165d4681b46ca88eb84be00686842ec2809a10cdb8b28361cf60176b4a702"
     },
     {
+      "bytes": 22272,
+      "path": "probe/bounded_dot_stdio.py",
+      "sha256": "946c81e6fd17c7d0723c6aabf2a8dbc7546ac4e2d1f1ef3b96ad73b57cc6654b"
+    },
+    {
       "bytes": 8302,
       "path": "probe/deliverable_contract.py",
       "sha256": "13b0d4c37cbf7696e3d432ffd4ac945978ddc3e3bfc8e6acb92ddd8a77cfee41"
@@ -286,6 +301,11 @@
       "sha256": "00d9f0ee461f3757015f6b98bd31fa3abdb28ef4aad1b2a80f5cd86bda5a1649"
     },
     {
+      "bytes": 25218,
+      "path": "probe/new_message_check.py",
+      "sha256": "e379f316f335c2fb7b0c03036aa5414076f85cab74b9b60caf61451874a81ec5"
+    },
+    {
       "bytes": 6463,
       "path": "probe/official_usage_provider.py",
       "sha256": "444c919521e97554a2896a90d4d1f3c148230dee888b200427b10cbccc2bb1c6"
@@ -301,9 +321,9 @@
       "sha256": "e5064b81399df981bcdbdea65521ff13e7fa52ab3276516640c353e63f9e42dc"
     },
     {
-      "bytes": 76944,
+      "bytes": 77452,
       "path": "probe/probe.py",
-      "sha256": "3d0e68f1e33d0cb1cdb40f4ca013cd41848226488d43ae5d06c958e618072e73"
+      "sha256": "697e8683d27ee0ace98435ff4f2c77b6a7d69c9ee8135508bfe7be5d2548d67f"
     },
     {
       "bytes": 12700,
@@ -566,9 +586,9 @@
       "sha256": "310f3044865edfda35d53706f90a7aa01f5c86405421ac1466624580aaf15aa1"
     },
     {
-      "bytes": 11747,
+      "bytes": 12170,
       "path": "probe_tests/test_activation_continuity.py",
-      "sha256": "df41bf49635e3798f35e3a24afab5e32c14bac83d2ebba13034cd7b3d9961764"
+      "sha256": "7cdea58b69ad13ff6c760b0558df554cbc9802d676ea102b9ec1d03ca3922c94"
     },
     {
       "bytes": 17649,
@@ -589,6 +609,11 @@
       "bytes": 9597,
       "path": "probe_tests/test_attachment_scope_boundaries.py",
       "sha256": "387ab5aa7f695c27ad909790556cdb1028c17531512ee2cb8608e992e98e3a2c"
+    },
+    {
+      "bytes": 17276,
+      "path": "probe_tests/test_bounded_dot_stdio.py",
+      "sha256": "915cbf843bef2f0be894113a782dc54a0b8c01febb6535efad38ba98160ee407"
     },
     {
       "bytes": 11603,
@@ -671,9 +696,9 @@
       "sha256": "aad17367d2afadcf7df7477ce47769c77b055d5aaf05b1488a9003fa850bb6e8"
     },
     {
-      "bytes": 8654,
+      "bytes": 23415,
       "path": "probe_tests/test_install_product.py",
-      "sha256": "bc1a188124d66b36a00275a41b148cf41b8d55f95db546a34ed581fbed750c53"
+      "sha256": "dcf0e4862b892ec07f567a1c099e64409a55e6224d74e5f1ec2696f5ee5aeeb4"
     },
     {
       "bytes": 3481,
@@ -689,6 +714,11 @@
       "bytes": 24314,
       "path": "probe_tests/test_media.py",
       "sha256": "42d54f83b03f0be472934e2cd536bdb50db7f9883c574b83ba04a7bf7d38707c"
+    },
+    {
+      "bytes": 20469,
+      "path": "probe_tests/test_new_message_check.py",
+      "sha256": "367684555d6f94adc11c33115bedfce72c8666950c8a08113201175bce54b932"
     },
     {
       "bytes": 1410,
@@ -851,9 +881,19 @@
       "sha256": "4412dc1671e049c2d80cb2edf4ba07558c7fe63e5f7313bf86c4f6235ccd9a3f"
     },
     {
+      "bytes": 1392,
+      "path": "scripts/bounded-dot-stdio.py",
+      "sha256": "a6d36dc732d09bd73cb75bd4b6bf1ee5b01b05bb5674c027b24db2e9262a28ae"
+    },
+    {
       "bytes": 15343,
       "path": "scripts/build-public-bundle.py",
       "sha256": "d496b4d510f2e6c139b86c1f32040f0edfc7b4968789a5b8d8ddd8fda6710faa"
+    },
+    {
+      "bytes": 3442,
+      "path": "scripts/check-new-message.py",
+      "sha256": "5206bfc1510c40efc2d21b46fd76ea476c47d53cbb1d719adc07a7fe6076ef38"
     },
     {
       "bytes": 798,
@@ -861,9 +901,9 @@
       "sha256": "b580ca91c7b349239d05839a028683ea78cdbbc473b1dca52aef4cdf61d1dbd5"
     },
     {
-      "bytes": 20209,
+      "bytes": 33421,
       "path": "scripts/install-project.py",
-      "sha256": "780fc9c2dee20478c28c6efa3f594aff49ecb938243400aaf45659e574821d8e"
+      "sha256": "31a2fceaf2254c95c355569bd1bd871c8f158344872e4a4c5e68320368b893be"
     },
     {
       "bytes": 1599,
@@ -906,9 +946,9 @@
       "sha256": "2e6cf969d2272838117c293ed9a8e44f1acb60759b7452ef5394d620cba0ccff"
     },
     {
-      "bytes": 16529,
+      "bytes": 16809,
       "path": "scripts/scan-public-bundle.py",
-      "sha256": "a3a40157f4ad78bb58752b7a4c6c4fe41e072c88ce75a6ddbed8c3b02198b257"
+      "sha256": "fdfd883a45c9d685cde512773db527da97b418c747545600016018b3548767a4"
     },
     {
       "bytes": 1610,

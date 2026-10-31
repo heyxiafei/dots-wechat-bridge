@@ -85,6 +85,10 @@ MERGED_MAIN_PATHS = (
 # Explicit union with the frozen r7 candidate, plus the separately reviewed
 # public operator configuration. Never discover exportable files with a glob.
 R7_ADDITION_PATHS = (
+    "probe/bounded_dot_stdio.py", "scripts/bounded-dot-stdio.py",
+    "probe_tests/test_bounded_dot_stdio.py", "docs/BOUNDED-DOT-STDIO.md",
+    "probe/new_message_check.py", "scripts/check-new-message.py",
+    "probe_tests/test_new_message_check.py", "docs/NEW-MESSAGE-CHECK.md",
     "config/owner-coordinator.json.example", "config/setup-approval.json.example",
     "docs/AUTHORIZATION-HANDOFF.md", "docs/COORDINATOR-WIRING.md",
     "docs/DELIVERABLES.md", "docs/HELP-APPROVED.txt", "docs/IMAGE-PAGES.md",

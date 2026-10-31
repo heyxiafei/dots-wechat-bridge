@@ -190,6 +190,7 @@ class ActivationContinuityTests(unittest.TestCase):
 
     def test_scan_success_and_missing_handoff_reports_bound_without_starting(self):
         with patch.object(self.install, 'check'), \
+             patch.object(self.install, 'preflight', return_value={'local_blockers': [], 'binding': {'status': 'not_confirmed_locally'}}), \
              patch.object(self.install, 'activation_prerequisites', return_value=self.approval), \
              patch.object(self.install, 'run') as run, \
              patch.object(self.install, 'start') as start:
@@ -203,6 +204,7 @@ class ActivationContinuityTests(unittest.TestCase):
         self.db.execute('DELETE FROM weixin_accounts')
         self.db.commit()
         with patch.object(self.install, 'check'), \
+             patch.object(self.install, 'preflight', return_value={'local_blockers': [], 'binding': {'status': 'not_confirmed_locally'}}), \
              patch.object(self.install, 'activation_prerequisites', return_value=self.approval), \
              patch.object(self.install, 'run'), patch.object(self.install, 'start') as start:
             result = self.install.connect(self.root)
@@ -213,6 +215,7 @@ class ActivationContinuityTests(unittest.TestCase):
 
     def test_changed_profile_after_scan_preserves_verified_binding_receipt(self):
         with patch.object(self.install, 'check'), \
+             patch.object(self.install, 'preflight', return_value={'local_blockers': [], 'binding': {'status': 'not_confirmed_locally'}}), \
              patch.object(self.install, 'activation_prerequisites', side_effect=[self.approval, ValueError('approved_profile_mismatch')]), \
              patch.object(self.install, 'run'), patch.object(self.install, 'start') as start:
             result = self.install.connect(self.root)

@@ -1116,6 +1116,14 @@ def main():
     # worker lock is not permission to enable optional private consumers.
     # Retained policy markers still fail closed in the original sender guard.
     probe = Probe(args.state_dir, allowed_hosts=args.allow_callback_host)
+    # A bounded acceptance state is never a production queue. Its original
+    # read-only receipt remains available through bounded-dot-stdio.py.
+    if (not args.status and probe.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='weixin_bounded_dot_check'").fetchone()):
+        print('bounded DOT diagnostic state cannot start production; read original receipt', file=sys.stderr)
+        probe.close()
+        if worker_lock is not None:
+            worker_lock.close()
+        return 1
     if args.emit or args.status:
         try:
             print(canonical(probe.emit() if args.emit else probe.status()))

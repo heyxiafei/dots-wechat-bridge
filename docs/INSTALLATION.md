@@ -20,6 +20,30 @@ python3.11 scripts/install-project.py install --prefix /absolute/new/project --t
 
 ## 首次接入：由安装方准备，必须有具体批准
 
+先一次运行只读综合预检，再准备二维码：
+
+```sh
+/absolute/new/project/.venv/bin/python /absolute/new/project/scripts/install-project.py preflight --prefix /absolute/new/project --scope connection_check
+```
+
+该入口只检查明确指定的新安装目录：源码与安装清单、当前 Python 与锁定依赖、绑定计数/ready/最后轮询时间，以及 profile、runtime key、客户端、setup-approval 的文件元数据。它不读取密钥或微信正文，不查旧库，不访问网络，不执行客户端、系统安全评估或服务命令，也不生成二维码。SQLite 使用只读查询并禁止非白名单列；有 WAL 而缺 SHM 时停止该项，避免创建共享内存文件。完整缺项在 `local_blockers` 中一次返回，避免让本人逐项扫码试错。
+
+`preflight` 的退出码 0 仅表示诊断已返回，**不是连通或上线成功**。文件存在、可执行位或本地 ready 绑定均不证明系统允许运行、平台授权、MCP 连通或手机收到；这些项分别保留 `not_verified`/`not_tested`。诊断不接收能授予启动权的布尔参数，不生成 setup-approval，也不替代真实的批准与外部回执。用其它 Python 执行时，依赖项会要求改用本安装的 `.venv/bin/python`，不会启动它来探测。
+
+`--scope connection_check` 用于完整 DOT/MCP 接入的本机准备检查，不需要旧历史、也不读取旧历史。若本人仅要求验证新 Mac 到微信的一条新消息传输，应选择更窄的范围：
+
+```sh
+/absolute/new/project/.venv/bin/python /absolute/new/project/scripts/install-project.py preflight --prefix /absolute/new/project --scope weixin_transport_check
+```
+
+`weixin_transport_check` 的本地条件只有安装完整性、Python/锁定依赖、唯一 ready 绑定和已安装并经安装清单核验的 `probe/new_message_check.py`、`scripts/check-new-message.py`。这段有限微信传输不调用 Tunnel；profile、runtime key、Tunnel 客户端和 setup-approval 仍列出元数据，但标为 `not_required_for_this_scope`，不要求本人先配置这些项目。此 scope 同样不要求或读取旧账本。
+
+`single_fresh_message_mode` 根据目标安装目录实际文件及安装清单返回：缺文件为 `not_installed`，文件存在但未由完整清单核验为 `installed_but_unverified`，核验通过为 `available_requires_operator_verification`。最后一项只表示诊断代码已安装；实际旧写入者隔离、本轮本人授权仍未核实，`startup_authorized` 始终为 false。预检本身不会运行该诊断、轮询微信、生成消息、写批准文件或自动改变订阅。
+
+有限传输验收成功也只证明这条微信传输链，不能冒充 DOT 的 MCP/事件接入完成。真实新消息入站、原 ID 的一次回复接口接受与本人手机收到仍分别记录。生产入口的单写者和 `retained_state` 检查不因任何预检 scope 改变；不能把新空库冒充首次安装。
+
+`connect` 现在先自动运行综合预检；有缺项就返回 `setup_incomplete` 和完整报告，退出码 1，不启动检查子进程或扫码。后续真实批准/完整性检查失败也返回同一诊断和固定错误类别。若绑定已 `confirmed_locally`，保留绑定并跳过扫码助手；不能让本人再次扫码来修复隧道或平台配置。先由安装方处理能够处理的依赖、配置和兼容问题，再一次集中说明确实需要本人完成的安全授权。
+
 1. 核实实际平台支持的 Tunnel、私有插件和 MCP Events；按当前官方界面核权限，取得真实隧道 ID，不填造 ID。运行密钥由本人在本机隐藏输入，只给该服务必要的 Tunnels Read/Use；助手不得读取、搬运现有认证或让用户把密钥贴到聊天。
 2. 从官方来源取得匹配平台的 tunnel-client，核验版本与发布校验值，放到该安装目录 `bin/`。本项目不附带该二进制。使用原 `render-config.py` 生成引用本目录密钥的 profile；先拒绝全部回调，再依据获准平台请求核实精确 callback host。禁止修改防火墙、代理或放宽网络域名作为捷径。
 3. 安装方记录本次用户批准、profile 与已核客户端哈希及单写者隔离证据到私有 `runtime/setup-approval.json`，结构见 example。默认模板全为 null，不能直接启动。此记录只是防误启动的本地条件，不授予平台权限，也不能替代真实批准/旧写入者停止证据。
@@ -66,5 +90,7 @@ python3.11 scripts/install-project.py install --prefix /absolute/new/project --t
 公开版不携带私人部署配置，普通 CLI 默认关闭 AIHot 集成。已有启用实例不能直接用默认配置覆盖升级：必须先核实原消费者、数据目录、原批准与 cutoff、运行代际及路由，使用受支持的可信宿主注入 AihotOperatorConfig 并验证接续。该配置不能由微信正文或 MCP 参数创建，不能用示例值冒充批准；当前没有通用 CLI 配置加载器。缺接线时不得声称无损升级。原持久恢复标记存在但可信配置缺失时，通知保护会保持停止；不得清除标记来绕过，普通 owner reply 仍走原路径。
 
 ## 当前边界
+
+若范围仅为新机经 DOT 完成一条全新消息验收，可另行审阅 [有限 DOT stdio 候选](BOUNDED-DOT-STDIO.md)。它不读取旧历史，复用真实 MCP 协议与原平台事件请求，默认不运行；正式生产 `connect` 的接续规则不因该有限候选改变。曾运行该诊断的状态目录会阻止普通生产 main 恢复队列，必须保留原回执，不能删除标记来转为常驻服务。此边界应在启动前向本人说明。
 
 安装器的离线成功证明依赖、代码、schema 与隔离启动可运行，不证明 Tunnel/插件/事件权限已授予。扫码自动继续流程和 macOS plist 注册逻辑均需真实平台及用户配合验收；官方额度 provider 接入、生产切流和手机端到端在完成前分别保持未通过。
