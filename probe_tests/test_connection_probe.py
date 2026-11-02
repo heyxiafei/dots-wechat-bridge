@@ -1,4 +1,6 @@
 import builtins
+import copy
+import hashlib
 import io
 import json
 import os
@@ -31,6 +33,12 @@ def lines(*values):
 
 
 class ConnectionProbeTests(unittest.TestCase):
+    def subscription(self):
+        return {'name': 'weixin.message', 'arguments': {}, 'ttlMs': 180000,
+                'delivery': {'mode': 'webhook', 'url': 'https://callback.example.com/private-route-fixture',
+                             'secret': 'synthetic-secret-fixture'},
+                'cursor': 'private-cursor-fixture'}
+
     def cli(self, args, body=''):
         return subprocess.run([sys.executable, '-B', str(SCRIPT), *args],
                               input=body, text=True, capture_output=True, timeout=4,
@@ -199,6 +207,108 @@ class ConnectionProbeTests(unittest.TestCase):
         result = self.cli(['--stdio'], lines(*[request('ping', request_id=n) for n in range(257)]))
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(len(result.stdout.splitlines()), check.MAX_REQUESTS)
+
+    def test_subscription_observation_is_explicit_and_never_registration(self):
+        params = self.subscription()
+        result = self.cli(['--observe-subscriptions'])
+        self.assertEqual(json.loads(result.stdout)['mode'], 'plan')
+        self.assertEqual(result.stderr, '')
+        self.assertNotIn('data', check.rpc(request('events/subscribe', params), 'fixture')['error'])
+        result = self.cli(['--stdio', '--observe-subscriptions'], lines(
+            request('initialize'), request('events/list', request_id=2),
+            request('events/subscribe', params, 3)))
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertIn('events', rows[0]['result']['capabilities'])
+        self.assertEqual([x['name'] for x in rows[1]['result']['events']], ['weixin.message'])
+        self.assertIn('error', rows[2])
+        observation = rows[2]['error']['data']
+        self.assertTrue(observation['observed_not_authorized'])
+        self.assertFalse(observation['subscription_registered'])
+        self.assertFalse(observation['callback_challenge_sent'])
+        self.assertFalse(observation['original_subscription_verified'])
+        diagnostics = [json.loads(line) for line in result.stderr.splitlines()]
+        self.assertEqual(diagnostics[1]['candidate_route_digest'], observation['candidate_route_digest'])
+        self.assertEqual(diagnostics[1]['instance_id'], diagnostics[0]['instance_id'])
+        for raw in ('callback.example.com', 'private-route-fixture', 'synthetic-secret-fixture', 'private-cursor-fixture'):
+            self.assertNotIn(raw, result.stdout + result.stderr)
+
+    def test_route_encoding_matches_original_and_ignores_rotating_data(self):
+        params = self.subscription()
+        route = json.dumps(['owner-only-tunnel', params['delivery']['url'], 'weixin.message', {}],
+                           sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+        digest = hashlib.sha256(route.encode()).hexdigest()
+        observed = check.observe_subscription(params)
+        self.assertEqual(observed['candidate_route_digest'], digest)
+        self.assertEqual(observed['candidate_subscription_id'], 'sub_' + digest[:32])
+        rotated = copy.deepcopy(params)
+        rotated['delivery']['secret'] = 'replacement-private-fixture'
+        rotated['cursor'] = 'replacement-cursor-fixture'
+        rotated['_meta'] = {'approve': True, 'private': 'private-meta-fixture'}
+        self.assertEqual(check.observe_subscription(rotated), observed)
+        rotated['delivery']['url'] += '/different'
+        changed = check.observe_subscription(rotated)
+        self.assertEqual(changed['candidate_callback_host_digest'], observed['candidate_callback_host_digest'])
+        self.assertNotEqual(changed['candidate_route_digest'], observed['candidate_route_digest'])
+
+    def test_secret_embedded_in_valid_hostname_is_not_echoed(self):
+        params = self.subscription()
+        params['delivery']['url'] = 'https://private-host-token-fixture.callback.example.com/private-route-fixture'
+        result = self.cli(['--stdio', '--observe-subscriptions'], lines(request('events/subscribe', params)))
+        self.assertIn('candidate_route_digest', result.stdout)
+        self.assertNotIn('private-host-token-fixture', result.stdout + result.stderr)
+        self.assertNotIn('callback.example.com', result.stdout + result.stderr)
+
+    def test_observed_lifetimes_preserve_presence_null_and_exact_number(self):
+        params = self.subscription()
+        for present, value, expected in ((False, None, {'kind': 'omitted'}),
+                (True, None, {'kind': 'null'}), (True, 7, {'kind': 'finite', 'value': 7})):
+            if present:
+                params['ttlMs'] = value
+            else:
+                params.pop('ttlMs', None)
+            self.assertEqual(check.observe_subscription(params)['requested_lifetime'], expected)
+        for bad in (True, 0, -1, 1.5, '180000', 2**53):
+            params['ttlMs'] = bad
+            with self.assertRaises(ValueError):
+                check.observe_subscription(params)
+
+    def test_observer_rejects_bad_shapes_and_notifications_without_echo(self):
+        for modify in (
+                lambda p: p.update(name='other.event'), lambda p: p.update(arguments={'owner': 'other'}),
+                lambda p: p.update(approve=True), lambda p: p.update(_meta='private-meta-fixture'),
+                lambda p: p['delivery'].update(mode='other'),
+                lambda p: p['delivery'].update(url='http://callback.example.com'),
+                lambda p: p['delivery'].update(url='https://private-user:private-pass@callback.example.com'),
+                lambda p: p['delivery'].update(url='https://127.0.0.1/private-route-fixture'),
+                lambda p: p['delivery'].update(url='https://callback.example.com:444/path'),
+                lambda p: p['delivery'].update(url='https://callback.example.com/path#private-fragment')):
+            params = self.subscription(); modify(params)
+            response = check.rpc(request('events/subscribe', params), 'fixture', True)
+            self.assertNotIn('data', response['error'])
+            self.assertNotIn('private-', json.dumps(response))
+        notification = request('events/subscribe', self.subscription()); notification.pop('id')
+        self.assertIsNone(check.rpc(notification, 'fixture', True))
+        self.assertIn('error', check.rpc(request('events/unsubscribe', self.subscription()), 'fixture', True))
+        self.assertIn('error', check.rpc(request('tools/call', {'name': 'reply_weixin_message',
+            'arguments': {'text': 'private-body-fixture'}}), 'fixture', True))
+
+    def test_observation_serve_has_no_file_database_or_network_access(self):
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, lines(request('events/subscribe', self.subscription())).encode()); os.close(write_fd)
+        output, errors = io.StringIO(), io.StringIO()
+        blocked = AssertionError('observation external operation forbidden')
+        try:
+            with patch.object(builtins, 'open', side_effect=blocked), \
+                    patch.object(os, 'open', side_effect=blocked), \
+                    patch.object(Path, 'open', side_effect=blocked), \
+                    patch.object(sqlite3, 'connect', side_effect=blocked), \
+                    patch.object(socket, 'socket', side_effect=blocked), \
+                    patch.object(socket, 'getaddrinfo', side_effect=blocked), \
+                    patch.object(subprocess, 'Popen', side_effect=blocked):
+                self.assertEqual(check.serve(1, read_fd, output, errors, True), 'eof')
+            self.assertTrue(json.loads(output.getvalue())['error']['data']['observed_not_authorized'])
+        finally:
+            os.close(read_fd)
 
 
 if __name__ == '__main__':

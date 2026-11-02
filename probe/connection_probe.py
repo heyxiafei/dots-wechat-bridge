@@ -5,12 +5,16 @@ would create database state and defeat this entry point's purpose.
 """
 import json
 import io
+import hashlib
+import ipaddress
 import os
+import re
 import secrets
 import select
 import signal
 import sys
 import time
+from urllib.parse import urlsplit
 
 
 # Static protocol identity shared with probe.py, without importing its runtime.
@@ -26,13 +30,79 @@ def canonical(value):
     return json.dumps(value, ensure_ascii=True, separators=(',', ':'), allow_nan=False)
 
 
-def plan():
+def plan(observe_subscriptions=False):
     return {'mode': 'plan', 'stdio_started': False, 'authorization_granted': False,
             'requires_subscription_digest': False, 'requires_state_directory': False,
             'requires_transport_authorization': True, 'max_duration_seconds': MAX_DURATION_SECONDS,
             'network_enabled': False, 'weixin_polling_enabled': False,
             'message_sending_enabled': False, 'subscriptions_enabled': False,
+            'subscription_observation_enabled': observe_subscriptions is True,
             'note': 'Only a later authorized private transport can expose this diagnostic.'}
+
+
+def lifetime(params):
+    """Preserve exact requested TTL semantics; none of this grants a lifetime."""
+    if 'ttlMs' not in params:
+        return {'kind': 'omitted'}
+    value = params['ttlMs']
+    if value is None:
+        return {'kind': 'null'}
+    if type(value) is not int or not 0 < value < 2**53:
+        raise ValueError('invalid_lifetime')
+    return {'kind': 'finite', 'value': value}
+
+
+def observe_subscription(params):
+    """Project a candidate route without echoing host, URL, secret or cursor.
+
+    This deliberately does not validate a signing secret, resolve DNS, verify
+    the caller or register anything. A valid projection is not authorization.
+    Route encoding must exactly match Probe.subscription_id's canonical list.
+    """
+    if (not isinstance(params, dict)
+            or not set(params) <= {'name', 'arguments', 'delivery', 'ttlMs', 'cursor', '_meta'}
+            or params.get('name') != 'weixin.message' or params.get('arguments', {}) != {}
+            or ('_meta' in params and not isinstance(params['_meta'], dict))):
+        raise ValueError('invalid_subscription_shape')
+    delivery = params.get('delivery')
+    if (not isinstance(delivery, dict) or not set(delivery) <= {'mode', 'url', 'secret'}
+            or delivery.get('mode') != 'webhook'):
+        raise ValueError('invalid_delivery_shape')
+    url = delivery.get('url')
+    if (not isinstance(url, str) or not 1 <= len(url) <= 8192
+            or any(ord(char) < 33 or ord(char) == 127 for char in url)):
+        raise ValueError('invalid_callback_shape')
+    parts = urlsplit(url)
+    host = parts.hostname
+    if (parts.scheme != 'https' or not host or len(host) > 253
+            or parts.username or parts.password or parts.fragment
+            or parts.port not in (None, 443) or '.' not in host
+            or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label)
+                       for label in host.split('.'))):
+        raise ValueError('invalid_callback_shape')
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        raise ValueError('literal_address_refused')
+    route = json.dumps(['owner-only-tunnel', url, 'weixin.message', {}],
+                       sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    digest = hashlib.sha256(route.encode()).hexdigest()
+    return {'observation_type': 'subscription_candidate', 'observed_not_authorized': True,
+            'candidate_callback_host_digest': hashlib.sha256(host.encode('ascii')).hexdigest(),
+            'candidate_route_digest': digest, 'candidate_subscription_id': 'sub_' + digest[:32],
+            'requested_lifetime': lifetime(params), 'subscription_registered': False,
+            'callback_challenge_sent': False, 'original_subscription_verified': False}
+
+
+def observed_event():
+    return {'name': 'weixin.message',
+            'description': 'DIAGNOSTIC ONLY: subscription requests are observed and refused; no messages or events are delivered.',
+            'delivery': ['webhook'],
+            'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+            'payloadSchema': {'type': 'object', 'properties': {'message_id': {'type': 'string'}},
+                              'required': ['message_id'], 'additionalProperties': False}}
 
 
 def diagnostic(instance_id):
@@ -63,7 +133,7 @@ def error(request_id, code=-32000):
         'code': code, 'message': 'Read-only MCP diagnostic: operation unavailable'}}
 
 
-def rpc(request, instance_id):
+def rpc(request, instance_id, observe_subscriptions=False):
     """No request, including a notification, can authorize or perform a write."""
     request_id = request.get('id') if isinstance(request, dict) else None
     safe_id = request_id if valid_id(request_id) else None
@@ -85,16 +155,29 @@ def rpc(request, instance_id):
         # never included in diagnostic output or tool arguments.
         params.pop('_meta')
     server_info = {'name': SERVER_NAME, 'version': SERVER_VERSION}
+    capabilities = {'tools': {}}
+    if observe_subscriptions is True:
+        capabilities['events'] = {}
     if method == 'initialize':
         result = {'protocolVersion': VERSION, 'serverInfo': server_info,
-                  'capabilities': {'tools': {}}}
+                  'capabilities': capabilities}
     elif method == 'server/discover':
         result = {'resultType': 'complete', 'supportedVersions': [VERSION],
-                  'serverInfo': server_info, 'capabilities': {'tools': {}}}
+                  'serverInfo': server_info, 'capabilities': capabilities}
     elif method == 'ping' and params == {}:
         result = {}
     elif method == 'tools/list' and params == {}:
         result = {'tools': tools()}
+    elif observe_subscriptions is True and method == 'events/list' and params == {}:
+        result = {'events': [observed_event()]}
+    elif observe_subscriptions is True and method == 'events/subscribe':
+        try:
+            observation = observe_subscription(params)
+        except (ValueError, TypeError, UnicodeError, RecursionError):
+            return error(request_id, -32602)
+        response = error(request_id)
+        response['error']['data'] = observation
+        return response
     elif (method == 'tools/call' and set(params) <= {'name', 'arguments'}
           and params.get('name') == 'get_weixin_status'
           and params.get('arguments', {}) == {}):
@@ -148,7 +231,7 @@ class BoundedOutput:
             os.set_blocking(self.fd, self.was_blocking)
 
 
-def serve(duration_seconds=60, stdin_fd=0, stdout=None, stderr=None):
+def serve(duration_seconds=60, stdin_fd=0, stdout=None, stderr=None, observe_subscriptions=False):
     """Read bounded JSON-lines from stdin only; exit on EOF, deadline or limits.
 
     Raw nonblocking output and a timer bound backpressure without leaving a
@@ -208,9 +291,13 @@ def serve(duration_seconds=60, stdin_fd=0, stdout=None, stderr=None):
                 except (ValueError, UnicodeError, RecursionError):
                     response = error(None, -32700)
                 else:
-                    response = rpc(request, instance_id)
+                    response = rpc(request, instance_id, observe_subscriptions)
                 if response is not None:
                     output.emit(response, deadline)
+                    observation = response.get('error', {}).get('data', {})
+                    if observation.get('observation_type') == 'subscription_candidate':
+                        diagnostics.emit({'event': 'subscription_candidate_observed',
+                                          'instance_id': instance_id, **observation}, deadline)
         else:
             reason = 'deadline'
     except DeadlineExpired:

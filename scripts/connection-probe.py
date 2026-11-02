@@ -19,15 +19,16 @@ class SafeParser(argparse.ArgumentParser):
 def main():
     parser = SafeParser(description=__doc__)
     parser.add_argument('--stdio', action='store_true')
+    parser.add_argument('--observe-subscriptions', action='store_true')
     parser.add_argument('--duration-seconds', type=int, default=60)
     args = parser.parse_args()
     if not 1 <= args.duration_seconds <= 180:
         parser.error('duration must be between 1 and 180 seconds')
     if not args.stdio:
-        print(canonical(plan()))
+        print(canonical(plan(args.observe_subscriptions)))
         return 0
     try:
-        reason = serve(args.duration_seconds)
+        reason = serve(args.duration_seconds, observe_subscriptions=args.observe_subscriptions)
     except (ValueError, OSError):
         print('Read-only MCP diagnostic could not start; no runtime changes were made.', file=sys.stderr)
         return 1

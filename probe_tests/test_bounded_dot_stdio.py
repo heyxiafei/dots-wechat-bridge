@@ -99,6 +99,19 @@ class BoundedDotTests(unittest.TestCase):
         self.assertNotIn('error', result)
         return mid
 
+    def stable_approval(self):
+        value = copy.deepcopy(self.approval)
+        value.pop('subscription_request_digest')
+        observed = bounded.observe_subscription(self.params)
+        value.update(subscription_match_mode='stable_route_v1',
+                     subscription_route_digest=observed['candidate_route_digest'],
+                     callback_host_digest=observed['candidate_callback_host_digest'],
+                     subscription_lifetime=observed['requested_lifetime'])
+        return value
+
+    def use_stable_approval(self):
+        self.session.approval = bounded.validate_approval(self.stable_approval(), self.clock())
+
     def test_real_probe_event_read_final_and_original_status(self):
         mid = self.ready()
         data = self.probe.weixin.read_message(mid)
@@ -126,6 +139,136 @@ class BoundedDotTests(unittest.TestCase):
         self.assertIn('error', self.rpc('events/subscribe', wrong))
         self.session.tick()
         self.assertEqual(self.client.polls, 0)
+
+    def test_stable_route_allows_secret_cursor_rotation_and_runs_real_challenge(self):
+        self.use_stable_approval()
+        rotated = copy.deepcopy(self.params)
+        rotated['delivery']['secret'] = 'whsec_' + base64.b64encode(b'r' * 32).decode()
+        rotated['cursor'] = 'private-rotated-cursor-fixture'
+        rotated['_meta'] = {'approve': True, 'private': 'private-metadata-fixture'}
+        with patch.object(self.probe, 'post', wraps=self.probe.post) as post:
+            response = self.rpc('events/subscribe', rotated)
+            self.assertIn('result', response)
+            self.assertEqual(post.call_count, 1)
+            self.assertEqual(json.loads(post.call_args.args[1])['type'], 'verification')
+        self.assertEqual(response['result']['id'], self.approval['subscription_id'])
+        self.assertEqual(self.session.receipt()['phase'], 'waiting_source')
+        self.assertEqual(self.client.polls, 0)
+        self.assertIn('error', self.rpc('events/subscribe', rotated))
+
+    def test_legacy_exact_request_approval_does_not_allow_rotation(self):
+        rotated = copy.deepcopy(self.params)
+        rotated['cursor'] = 'private-rotated-cursor-fixture'
+        with patch.object(self.probe, 'post', wraps=self.probe.post) as post:
+            self.assertIn('error', self.rpc('events/subscribe', rotated))
+            post.assert_not_called()
+        self.assertEqual(self.session.receipt()['phase'], 'waiting_subscription')
+
+    def test_stable_mode_missing_mixed_unknown_and_mismatched_fields_fail_closed(self):
+        baseline = self.stable_approval()
+        candidates = [None, bounded.observe_subscription(self.params)]
+        for field in ('subscription_match_mode', 'callback_host_digest', 'subscription_route_digest',
+                      'subscription_id', 'subscription_lifetime'):
+            value = copy.deepcopy(baseline); value.pop(field); candidates.append(value)
+        for changes in ({'subscription_match_mode': None}, {'subscription_match_mode': 'unknown'},
+                {'subscription_request_digest': self.approval['subscription_request_digest']},
+                {'callback_host_digest': 'b' * 64}, {'subscription_route_digest': 'b' * 64},
+                {'callback_host': 'other.example.com'}, {'binding_sha256': ''},
+                {'valid_until': self.clock()}, {'subscription_lifetime': {'kind': 'finite', 'value': True}},
+                {'subscription_lifetime': {'kind': 'null', 'value': 0}}):
+            value = copy.deepcopy(baseline); value.update(changes); candidates.append(value)
+        for value in candidates:
+            with self.assertRaises(CheckError):
+                bounded.validate_approval(value, self.clock())
+
+    def test_stable_same_host_changed_path_and_ttl_cannot_authorize_callback(self):
+        self.use_stable_approval()
+        variants = []
+        wrong = copy.deepcopy(self.params); wrong['delivery']['url'] += '/other'; variants.append(wrong)
+        for ttl in (None, 180001, 1, True):
+            wrong = copy.deepcopy(self.params); wrong['ttlMs'] = ttl; variants.append(wrong)
+        wrong = copy.deepcopy(self.params); wrong.pop('ttlMs'); variants.append(wrong)
+        wrong = copy.deepcopy(self.params); wrong['name'] = 'other.event'; variants.append(wrong)
+        wrong = copy.deepcopy(self.params); wrong['arguments'] = {'owner': 'other'}; variants.append(wrong)
+        with patch.object(self.probe, 'post', wraps=self.probe.post) as post:
+            for params in variants:
+                self.assertIn('error', self.rpc('events/subscribe', params))
+            post.assert_not_called()
+        self.assertEqual(self.probe.db.execute('SELECT count(*) FROM subscriptions').fetchone()[0], 0)
+        self.session.tick(); self.assertEqual(self.client.polls, 0)
+
+    def test_stable_omitted_lifetime_requires_omission_and_grants_existing_default(self):
+        self.params.pop('ttlMs')
+        self.use_stable_approval()
+        explicit = copy.deepcopy(self.params); explicit['ttlMs'] = 86400000
+        self.assertIn('error', self.rpc('events/subscribe', explicit))
+        response = self.rpc('events/subscribe', self.params)
+        self.assertIn('result', response)
+        self.assertIsNotNone(response['result']['refreshBefore'])
+        expires = self.probe.db.execute('SELECT expires FROM subscriptions').fetchone()[0]
+        self.assertEqual(expires, self.clock() + 86400)
+
+    def test_stable_null_lifetime_requires_explicit_null_approval(self):
+        self.params['ttlMs'] = None
+        self.use_stable_approval()
+        omitted = copy.deepcopy(self.params); omitted.pop('ttlMs')
+        self.assertIn('error', self.rpc('events/subscribe', omitted))
+        response = self.rpc('events/subscribe', self.params)
+        self.assertIn('result', response)
+        self.assertIsNone(response['result']['refreshBefore'])
+
+    def test_stable_bad_secret_is_local_rejection_before_claim_or_network(self):
+        self.use_stable_approval()
+        with patch.object(self.probe, 'post', wraps=self.probe.post) as post:
+            for secret in (None, '', 'private-key-fixture', 'whsec_' + base64.b64encode(b'x').decode()):
+                bad = copy.deepcopy(self.params); bad['delivery']['secret'] = secret
+                response = self.rpc('events/subscribe', bad)
+                self.assertIn('error', response)
+                self.assertNotIn('private-key-fixture', json.dumps(response))
+                self.assertEqual(self.session.receipt()['phase'], 'waiting_subscription')
+            post.assert_not_called()
+            self.assertIn('result', self.rpc('events/subscribe', self.params))
+            self.assertEqual(post.call_count, 1)
+
+    def test_stable_unknown_callback_never_retries_even_with_replaced_secret(self):
+        self.use_stable_approval()
+        with patch.object(self.probe, 'post', side_effect=TimeoutError('private-network-body-fixture')) as post:
+            response = self.rpc('events/subscribe', self.params)
+            self.assertIn('error', response)
+            self.assertNotIn('private-', json.dumps(response))
+            rotated = copy.deepcopy(self.params)
+            rotated['delivery']['secret'] = 'whsec_' + base64.b64encode(b'r' * 32).decode()
+            self.assertIn('error', self.rpc('events/subscribe', rotated))
+            self.assertEqual(post.call_count, 1)
+        self.session.tick(); self.assertEqual(self.client.polls, 0)
+        self.assertEqual(self.session.receipt()['phase'], 'subscription_unknown')
+
+    def test_stable_notifications_and_changed_owner_binding_cannot_start(self):
+        self.use_stable_approval()
+        self.assertIn('error', self.session.rpc({'jsonrpc': '2.0', 'method': 'events/subscribe', 'params': self.params}))
+        self.assertEqual(self.probe.db.execute('SELECT count(*) FROM subscriptions').fetchone()[0], 0)
+        self.session.approval['binding_sha256'] = 'b' * 64
+        self.assertIn('error', self.rpc('events/subscribe', self.params))
+        self.assertEqual(self.client.polls, 0)
+
+    def test_stable_owner_filter_remains(self):
+        self.use_stable_approval()
+        self.assertIn('result', self.rpc('events/subscribe', self.params))
+        self.client.batches = [{'ret': 0, 'msgs': [self.msg(from_user_id='other-owner')]}]
+        self.session.tick()
+        self.assertEqual(self.probe.db.execute('SELECT count(*) FROM weixin_inbox').fetchone()[0], 0)
+        self.assertFalse(self.events); self.assertFalse(self.client.posts)
+
+    def test_stable_final_unknown_preserves_original_id_without_resend(self):
+        self.use_stable_approval()
+        mid = self.ready()
+        self.client.failure = TimeoutError('private-provider-fixture')
+        first = self.call('reply_weixin_message', message_id=mid, text='first')
+        second = self.call('reply_weixin_message', message_id=mid, text='different')
+        self.assertNotIn('private-provider-fixture', json.dumps(first))
+        self.assertTrue(second['result']['structuredContent']['content_conflict'])
+        self.assertEqual(len(self.client.posts), 1)
+        self.assertEqual(bounded.read_receipt(self.directory, 'a' * 32)['phase'], 'delivery_unknown')
 
     def test_old_foreign_missing_time_and_forwarded_never_ingested(self):
         self.rpc('events/subscribe', self.params)

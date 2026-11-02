@@ -20,7 +20,11 @@ python3.11 scripts/install-project.py install --prefix /absolute/new/project --t
 
 ## 首次接入：由安装方准备，必须有具体批准
 
-基础 MCP 到达诊断可使用 [限时只读入口](CONNECTION-PROBE.md)。它不需要预先取得订阅摘要，不打开运行数据库，也不启用微信收发；默认仅计划。实际 Tunnel 访问仍需获准，临时工具目录不得用于更新原 App。该入口只验证传输，尚未解决后续原订阅握手和有限发送入口的前置条件。
+基础 MCP 到达诊断可使用 [限时只读入口](CONNECTION-PROBE.md)。它不需要预先取得订阅摘要，不打开运行数据库，也不启用微信收发；默认仅计划。显式订阅观察只返回候选身份摘要和请求的有效期，不注册订阅，也不生成批准。实际 Tunnel 访问仍需获准，临时能力目录不得用于更新原 App。后续有限发送须独立核实原调用来源、精确回调身份及具体授权；观察结果本身不能证明原订阅已接续。
+
+macOS 官方客户端的安装应按 [OpenAI 的平台安装说明](https://github.com/openai/tunnel-client/blob/v0.0.19/README.md#install-with-homebrew)使用官方 Homebrew tap。如果实际安装以 `Error: Your Command Line Tools (CLT) does not support macOS ...` 和非零退出码终止，应先记录安装版本、原始错误及选中的 SDK；无 bottle 的 Formula 即使只解压预编译文件，也可能进入 Homebrew 的致命构建环境前检。这不是客户端已经编译失败或启动被系统拦截的证明。单独的 `brew doctor` 警告也不能替代实际安装结果。
+
+SDK 不适用时，优先核对 [Apple 独立 CLT 的正常更新入口](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools)和实际包兼容说明，不根据系统版本猜包名。系统更新查询超时应记为未知；不为重装盲目删除 CLT。已有旧 CLT 时，Homebrew 可能仍优先选择它，不能承诺只装完整 Xcode 或改变开发目录就能修复。裸 CLI 的只读签名评估与实际启动结果分别记录；既有执行限制不能因换安装渠道而自动解除，任何真实系统安全拦截均按官方支持方式处理。
 
 先一次运行只读综合预检，再准备二维码：
 

@@ -16,10 +16,11 @@ import stat
 import sys
 import time
 
-from .probe import Probe, RpcError, acquire_worker_lock, canonical, headers, MAX_RPC_BYTES
+from .probe import Probe, RpcError, acquire_worker_lock, canonical, headers, key_bytes, MAX_RPC_BYTES
 from .new_message_check import (CheckError, ROUND, binding, candidate, checked_database,
                                 classify_send, open_database, phrase, unused_state)
 from .weixin import IlinkClient, WeixinError
+from .connection_probe import observe_subscription
 
 TABLE = 'weixin_bounded_dot_check'
 PHASES = {'waiting_subscription', 'subscription_unknown', 'waiting_source', 'poll_stopped',
@@ -28,6 +29,7 @@ PHASES = {'waiting_subscription', 'subscription_unknown', 'waiting_source', 'pol
 TOOLS = {'get_weixin_status', 'read_weixin_message', 'reply_weixin_message', 'get_weixin_send_status'}
 REFERENCES = ('approval_reference', 'platform_request_evidence_reference',
               'accepted_transport_evidence_reference', 'private_tunnel_access_reference')
+STABLE_FIELDS = {'subscription_route_digest', 'callback_host_digest', 'subscription_lifetime'}
 
 
 def plan():
@@ -50,7 +52,26 @@ def validate_approval(value, now):
     for key in REFERENCES:
         if not isinstance(value.get(key), str) or not 1 <= len(value[key]) <= 512 or '\n' in value[key]:
             raise CheckError('external_authorization_evidence_required')
-    for key in ('binding_sha256', 'subscription_request_digest'):
+    digest_fields = ['binding_sha256']
+    mode = value.get('subscription_match_mode')
+    if mode is None and not (set(value) & STABLE_FIELDS) and 'subscription_match_mode' not in value:
+        # Existing records keep exact-request semantics; never reinterpret them.
+        digest_fields.append('subscription_request_digest')
+    elif mode == 'stable_route_v1' and 'subscription_request_digest' not in value:
+        digest_fields.extend(('subscription_route_digest', 'callback_host_digest'))
+        ttl = value.get('subscription_lifetime')
+        if not isinstance(ttl, dict):
+            raise CheckError('exact_subscription_lifetime_required')
+        if ttl.get('kind') in ('omitted', 'null'):
+            valid_ttl = set(ttl) == {'kind'}
+        else:
+            valid_ttl = (set(ttl) == {'kind', 'value'} and ttl.get('kind') == 'finite'
+                         and type(ttl.get('value')) is int and 0 < ttl['value'] < 2**53)
+        if not valid_ttl:
+            raise CheckError('exact_subscription_lifetime_required')
+    else:
+        raise CheckError('subscription_match_mode_required')
+    for key in digest_fields:
         if not isinstance(value.get(key), str) or not re.fullmatch('[a-f0-9]{64}', value[key]):
             raise CheckError('verified_binding_and_original_request_required')
     if not isinstance(value.get('subscription_id'), str) or not re.fullmatch('sub_[a-f0-9]{32}', value['subscription_id']):
@@ -58,6 +79,10 @@ def validate_approval(value, now):
     host = value.get('callback_host')
     if not isinstance(host, str) or not re.fullmatch(r'[a-z0-9][a-z0-9.-]{0,251}[a-z0-9]', host) or '.' not in host or '..' in host:
         raise CheckError('exact_callback_host_required')
+    if mode == 'stable_route_v1':
+        if (hashlib.sha256(host.encode('ascii')).hexdigest() != value['callback_host_digest']
+                or value['subscription_id'] != 'sub_' + value['subscription_route_digest'][:32]):
+            raise CheckError('verified_original_route_required')
     return dict(value)
 
 
@@ -174,10 +199,19 @@ class BoundedDot:
 
     def subscribe(self, params):
         self.active()
+        if self.approval.get('subscription_match_mode') == 'stable_route_v1':
+            observation = observe_subscription(params)
+            matched = (observation['candidate_route_digest'] == self.approval['subscription_route_digest']
+                       and observation['candidate_callback_host_digest'] == self.approval['callback_host_digest']
+                       and observation['requested_lifetime'] == self.approval['subscription_lifetime'])
+        else:
+            matched = hashlib.sha256(canonical(params).encode()).hexdigest() == self.approval['subscription_request_digest']
         if (params.get('name') != 'weixin.message' or params.get('arguments', {}) != {}
-                or hashlib.sha256(canonical(params).encode()).hexdigest() != self.approval['subscription_request_digest']
-                or self.probe.subscription_id(params) != self.approval['subscription_id']):
+                or not matched or self.probe.subscription_id(params) != self.approval['subscription_id']):
             raise CheckError('original_subscription_request_required')
+        if self.approval.get('subscription_match_mode') == 'stable_route_v1':
+            # Deterministic input rejection is not an uncertain network attempt.
+            key_bytes(params['delivery'].get('secret'))
         self.transition('waiting_subscription', 'subscription_unknown')
         result = self.probe.subscribe(params)
         self.transition('subscription_unknown', 'waiting_source')
