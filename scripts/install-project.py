@@ -382,6 +382,11 @@ def require_state_continuity(root, approval):
     Checkpoints cover immutable original rows; later rows and send/subscription
     status changes are deliberately allowed on normal restarts.
     """
+    profile = root/'runtime/profile.yaml'
+    if profile.is_file() and not profile.is_symlink():
+        commands = re.findall(r'^\s+command:\s*(.+)$', profile.read_text(), re.M)
+        if any('--connection-only' in shlex.split(command) for command in commands):
+            raise ValueError('connection_only_profile_not_production')
     handoff = approval.get('handoff')
     fresh = isinstance(handoff, dict) and handoff.get('continuity_mode') == 'fresh_after_approved_cutover'
     # Never let the first-install shortcut turn a future-only generation into

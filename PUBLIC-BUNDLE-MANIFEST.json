@@ -56,6 +56,11 @@
       "sha256": "ed014a6ec314cd1f52ec8c2e25f0596aa9a1077725337ac9aeb39cf3ce9a0107"
     },
     {
+      "bytes": 5780,
+      "path": "docs/CONNECTION-ONLY.md",
+      "sha256": "1d32b7228568e2f68db6ccb926a7ff09578645e6f0abd085b315aa4a564c5936"
+    },
+    {
       "bytes": 4919,
       "path": "docs/CONNECTION-PROBE.md",
       "sha256": "0d2b296dd2aa3f9565d1c9b949df6b15ae5a60f94e20796995927c2883571fea"
@@ -261,6 +266,11 @@
       "sha256": "498e1bb39be940639610943bd7c5b1386cadc86fe232052a0412105155f57986"
     },
     {
+      "bytes": 16827,
+      "path": "probe/connection_only.py",
+      "sha256": "243a43722875c024e43498d57ac0a21e39834f467645a66500049259a1859cb9"
+    },
+    {
       "bytes": 14149,
       "path": "probe/connection_probe.py",
       "sha256": "1dc2e755c8a90a5126acce8f59bd80bbc6211a58c904f56eef82c8f9b1958a5e"
@@ -341,9 +351,9 @@
       "sha256": "e5064b81399df981bcdbdea65521ff13e7fa52ab3276516640c353e63f9e42dc"
     },
     {
-      "bytes": 85352,
+      "bytes": 87834,
       "path": "probe/probe.py",
-      "sha256": "0818b543205f9ac91cfa8a6ad6d418b26380ce46c3ee35c23eb65fc5288b0506"
+      "sha256": "32c266ff0e6f54f770d00e987030f480ef7cb09445f5d0825d19c6daf1056036"
     },
     {
       "bytes": 12700,
@@ -634,6 +644,16 @@
       "bytes": 26080,
       "path": "probe_tests/test_bounded_dot_stdio.py",
       "sha256": "7172ff1caaf51d962bba3161bf7af293ec110330089e7ef5dd26e6c2480cab20"
+    },
+    {
+      "bytes": 16154,
+      "path": "probe_tests/test_connection_only.py",
+      "sha256": "36e69cf74f3370a39e03562116f14ce0f572da1feb1d17b1a96401d284e064d5"
+    },
+    {
+      "bytes": 8268,
+      "path": "probe_tests/test_connection_only_cli.py",
+      "sha256": "c420f47d015b87d8746e228b2ae59fc332f7e7c103c4d5af043d32048eefcf16"
     },
     {
       "bytes": 18466,
@@ -946,9 +966,9 @@
       "sha256": "b580ca91c7b349239d05839a028683ea78cdbbc473b1dca52aef4cdf61d1dbd5"
     },
     {
-      "bytes": 36805,
+      "bytes": 37140,
       "path": "scripts/install-project.py",
-      "sha256": "0bee7432290308ecf035cd5f8c32eb304e9f6204fecac5f4ae1bd55380417714"
+      "sha256": "778a12f6f66dc9c0b36a9ce2eea46704aa1b16f8c82c3f6559a7d9d2dbbc9b17"
     },
     {
       "bytes": 1599,
@@ -976,9 +996,9 @@
       "sha256": "2d3fbfdc1a213714b2fab929b470be9ef274d33aa0f4be37f194d74ab43c7235"
     },
     {
-      "bytes": 3255,
+      "bytes": 5043,
       "path": "scripts/render-config.py",
-      "sha256": "bc2781f1e49f88e8d043bf4ca8a391d1be529ea98157ff338f7ecb51408a3e07"
+      "sha256": "d8929fae4b0b1dc1068412160eea156419c332550d40a2d68d16feac2a602ba5"
     },
     {
       "bytes": 1086,
@@ -991,9 +1011,9 @@
       "sha256": "2e6cf969d2272838117c293ed9a8e44f1acb60759b7452ef5394d620cba0ccff"
     },
     {
-      "bytes": 17129,
+      "bytes": 17274,
       "path": "scripts/scan-public-bundle.py",
-      "sha256": "da13402b6485cc642012d7f331de92ba0b672c4ad7b300ea9942bfa1b5ffef05"
+      "sha256": "b163919e69c2380078bb59c7d7790a8c2ac657da6f71d8e73a0ed711baa18461"
     },
     {
       "bytes": 1610,

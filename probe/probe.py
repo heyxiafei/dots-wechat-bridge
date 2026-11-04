@@ -470,7 +470,7 @@ class Probe:
         callback_parts(url, self.allowed_hosts)
         return "sub_" + hashlib.sha256(canonical(["owner-only-tunnel", url, name, {}]).encode()).hexdigest()[:32]
 
-    def subscribe(self, params):
+    def subscribe(self, params, *, force_verification=False):
         fresh = self.fresh_admission
         if fresh is not None:
             fresh.before_subscribe(params)
@@ -491,7 +491,7 @@ class Probe:
         sub = {"id": sub_id, "url": params["delivery"]["url"], "secret": secret,
                "old_secret": old["secret"] if old and old["secret"] != secret else (old["old_secret"] if old else None),
                "rotate_until": now + 300 if old and old["secret"] != secret else (old["rotate_until"] if old else 0)}
-        cached = (fresh is None and old and old["secret"] == secret and old["verified_at"] > now - 300
+        cached = (not force_verification and fresh is None and old and old["secret"] == secret and old["verified_at"] > now - 300
                   and (old['expires'] is None or old['expires'] > now))
         if not cached:
             challenge = secrets.token_urlsafe(24)
@@ -1201,10 +1201,44 @@ def main():
     parser.add_argument("--offline", action="store_true", help="Isolated installation check: no network, subscriptions, receivers or senders")
     parser.add_argument("--fresh-production", action="store_true",
                         help="Use the explicitly approved durable future-message cutover; never migrate old queues")
+    parser.add_argument("--connection-only", action="store_true",
+                        help="Bounded original-route handshake only; no business workers or message operations")
+    parser.add_argument("--connection-route-digest")
+    parser.add_argument("--connection-subscription-id")
+    parser.add_argument("--connection-duration-seconds", type=int, default=None,
+                        help="Connection-only lifetime in seconds (1..180; default 180)")
     args = parser.parse_args()
+    if args.connection_only:
+        if args.fresh_production or args.offline or args.status or args.emit:
+            parser.error('--connection-only cannot be combined with --fresh-production, --offline, --status or --emit')
+        if (not isinstance(args.connection_route_digest, str)
+                or not re.fullmatch(r'[0-9a-f]{64}', args.connection_route_digest)
+                or args.connection_subscription_id != 'sub_' + args.connection_route_digest[:32]):
+            parser.error('--connection-only requires the matching original route digest and subscription ID')
+        if len(args.allow_callback_host) != 1:
+            parser.error('--connection-only requires exactly one --allow-callback-host')
+        if args.connection_duration_seconds is not None and not 1 <= args.connection_duration_seconds <= 180:
+            parser.error('--connection-duration-seconds must be between 1 and 180')
+    elif (args.connection_route_digest is not None or args.connection_subscription_id is not None
+          or args.connection_duration_seconds is not None):
+        parser.error('connection route, subscription and duration options require --connection-only')
     if args.fresh_production and (args.emit or args.status or args.offline):
         parser.error('--fresh-production cannot be combined with --emit, --status or --offline')
     os.umask(0o077)
+    if args.connection_only:
+        # This branch must precede Probe construction, any store migration,
+        # worker-lock acquisition below, and every business recovery/thread.
+        try:
+            if __package__:
+                from .connection_only import serve
+            else:
+                from connection_only import serve
+            return serve(args.state_dir, args.allow_callback_host,
+                         args.connection_route_digest, args.connection_subscription_id,
+                         duration_seconds=args.connection_duration_seconds or 180)
+        except (OSError, ValueError, WeixinError, RpcError, sqlite3.Error):
+            print('connection-only validation or handshake unavailable; no business workers started', file=sys.stderr)
+            return 1
     if args.offline:
         if args.emit or args.status:
             parser.error('--offline cannot be combined with --emit or --status')
