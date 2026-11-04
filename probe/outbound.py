@@ -294,10 +294,15 @@ class OutboundStore:
     def queue(self, send_id, upload_id, message_id):
         if not isinstance(send_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', send_id):
             raise WeixinError('invalid_send_identity')
+        fresh = getattr(self.probe, 'fresh_admission', None)
+        if fresh is not None:
+            fresh.require_source(message_id)
         self.probe.weixin.read_message(message_id)
         account = self.probe.weixin.account()
         sid = 'media_' + hashlib.sha256(encoded([account['id'], send_id]).encode()).hexdigest()[:32]
         with self.lock, self.db:
+            if fresh is not None:
+                fresh.require_source(message_id)
             old = self.db.execute('SELECT upload_id,source_message_id FROM weixin_outbox WHERE message_id=?', (sid,)).fetchone()
             row = self.authorized(upload_id, allow_expired=bool(old))
             if old:

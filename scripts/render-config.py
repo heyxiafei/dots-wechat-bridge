@@ -7,7 +7,7 @@ import re
 import shlex
 
 
-def render(root, tunnel_id, callback_hosts, replace=False, discover_callback=False):
+def render(root, tunnel_id, callback_hosts, replace=False, discover_callback=False, fresh_production=False):
     root=Path(root).resolve()
     if not re.fullmatch(r'/[A-Za-z0-9_./-]+',str(root)):
         raise ValueError('Use an absolute installation path without spaces or shell metacharacters')
@@ -22,6 +22,8 @@ def render(root, tunnel_id, callback_hosts, replace=False, discover_callback=Fal
     for name in ('state','secrets'):
         target=runtime/name; target.mkdir(mode=0o700,exist_ok=True); os.chmod(target,0o700)
     args=[str(root/'.venv/bin/python'),str(root/'probe/probe.py'),'--state-dir',str(runtime/'state')]
+    if fresh_production:
+        args.append('--fresh-production')
     for host in callback_hosts: args.extend(['--allow-callback-host',host])
     profile=(root/'config/tunnel-profile.yaml.example').read_text().replace('__TUNNEL_ID__',tunnel_id).replace('__ROOT__',str(root)).replace('__MCP_COMMAND__',shlex.join(args))
     service=(root/'config/dots-wechat-bridge.service.example').read_text().replace('__ROOT__',str(root))
@@ -39,9 +41,10 @@ def main():
     destination.add_argument('--callback-host',action='append')
     destination.add_argument('--discover-callback',action='store_true',help='Deny all callbacks while discovering the authorized subscription hostname')
     parser.add_argument('--replace',action='store_true',help='Update only rendered config; preserves key and database')
+    parser.add_argument('--fresh-production',action='store_true',help='Render explicit future-only entry; does not approve or activate it')
     args=parser.parse_args()
     try:
-        runtime=render(args.root,args.tunnel_id,args.callback_host or [],args.replace,args.discover_callback)
+        runtime=render(args.root,args.tunnel_id,args.callback_host or [],args.replace,args.discover_callback,args.fresh_production)
         print('Rendered private profile and service in '+str(runtime))
     except (ValueError,OSError) as exc:
         parser.exit(1,type(exc).__name__+': config not generated; check inputs/file ownership\n')

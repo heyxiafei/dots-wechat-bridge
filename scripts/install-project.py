@@ -15,6 +15,7 @@ from pathlib import Path
 import plistlib
 import re
 import shutil
+import shlex
 import sqlite3
 import stat
 import subprocess
@@ -221,8 +222,9 @@ def preflight(root, scope='connection_check'):
     if dependencies['status'] != 'locked_dependencies_present':
         blockers.append('installed_dependencies_unverified')
     for name, info in files.items():
-        info['scope_requirement'] = 'not_required_for_this_scope' if transport_only else 'required_for_this_scope'
-        if not transport_only and info['status'] != 'present':
+        required = not transport_only and (name != 'setup_approval' or scope == 'production')
+        info['scope_requirement'] = 'required_for_this_scope' if required else 'not_required_for_this_scope'
+        if required and info['status'] != 'present':
             blockers.append(name + '_not_ready')
     key = files['runtime_key']
     if not transport_only and key['status'] == 'present' and (int(key['mode'], 8) & 0o077 or key['size_bytes'] == 0):
@@ -360,7 +362,6 @@ def activation_prerequisites(root):
 
 
 def require_owner_binding(root):
-    import sqlite3
     database = root/'runtime/state/probe.sqlite'
     if database.is_symlink() or not database.is_file():
         raise ValueError('owner_scan_not_confirmed')
@@ -381,6 +382,18 @@ def require_state_continuity(root, approval):
     Checkpoints cover immutable original rows; later rows and send/subscription
     status changes are deliberately allowed on normal restarts.
     """
+    handoff = approval.get('handoff')
+    fresh = isinstance(handoff, dict) and handoff.get('continuity_mode') == 'fresh_after_approved_cutover'
+    # Never let the first-install shortcut turn a future-only generation into
+    # unguarded legacy production, including on subsequent restarts.
+    database = root/'runtime/state/probe.sqlite'
+    if database.is_file() and not database.is_symlink():
+        with sqlite3.connect(database.as_uri()+'?mode=ro', uri=True) as marker_db:
+            marker = marker_db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='weixin_fresh_cutover'").fetchone()
+        if marker and not fresh:
+            raise ValueError('fresh_generation_requires_explicit_entry')
+    if fresh:
+        return require_fresh_continuity(root, approval)
     if approval.get('isolation_mode') == 'no_existing_writer_verified':
         return {'retained_subscription_state': 'not_applicable_first_install',
                 'subscription_refresh_performed': False}
@@ -395,7 +408,6 @@ def require_state_continuity(root, approval):
                 'history_retention_evidence_reference'):
         if not isinstance(handoff.get(key), str) or not handoff[key].strip():
             raise ValueError('handoff_evidence_reference_required')
-    import sqlite3
     database = root/'runtime/state/probe.sqlite'
     if database.is_symlink() or not database.is_file():
         raise ValueError('retained_state_handoff_required')
@@ -460,6 +472,50 @@ def require_state_continuity(root, approval):
                     if current[rowid] not in allowed:
                         raise ValueError('retained_submission_state_regression')
         return continuity
+
+
+def require_fresh_continuity(root, approval):
+    """A real operator cutover replaces old history, never external fencing.
+
+    This preflight is read-only. Worker activation persists the exact approved
+    generation; the original subscription must then complete a live challenge.
+    """
+    # Use only this reviewed source tree, not an arbitrary external module path.
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from probe.fresh_production import inspect_state, read_approval_file
+    from probe.weixin import WeixinError
+    try:
+        recorded = read_approval_file(root/'runtime/setup-approval.json')
+        if recorded != approval:
+            raise ValueError('fresh_approval_changed')
+        profile = (root/'runtime/profile.yaml').read_text()
+        tunnels = re.findall(r'^\s+tunnel_id:\s*(tunnel_[0-9a-f]{32})\s*$', profile, re.M)
+        commands = re.findall(r'^\s+command:\s*(.+)$', profile, re.M)
+        if tunnels != [approval['handoff']['tunnel_id']] or len(commands) != 1:
+            raise ValueError('fresh_approved_route_mismatch')
+        args = shlex.split(commands[0])
+        required = [str(python(root)), str(root/'probe/probe.py'), '--state-dir', str(root/'runtime/state'), '--fresh-production']
+        suffix = args[len(required):]
+        hosts_valid = (2 <= len(suffix) <= 6 and len(suffix) % 2 == 0
+                       and all(suffix[i] == '--allow-callback-host'
+                               and re.fullmatch(r'[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?', suffix[i+1])
+                               and '.' in suffix[i+1] and '..' not in suffix[i+1]
+                               for i in range(0, len(suffix), 2)))
+        if args[:len(required)] != required or not hosts_valid:
+            raise ValueError('fresh_explicit_entry_required')
+        database = root/'runtime/state/probe.sqlite'
+        if database.is_symlink() or not database.is_file():
+            raise ValueError('fresh_binding_not_ready')
+        with sqlite3.connect(database.as_uri()+'?mode=ro', uri=True) as db:
+            db.execute('BEGIN')
+            inspect_state(db, approval, time.time())
+    except WeixinError as error:
+        raise ValueError(error.kind) from None
+    return {'retained_subscription_state': 'original_requires_live_same_id_handshake',
+            'continuity_mode': 'fresh_after_approved_cutover',
+            'history_migrated': False, 'subscription_refresh_performed': False,
+            'external_isolation_evidence': 'operator_verified_not_locally_proven'}
 
 
 def launch_agent_spec(root):

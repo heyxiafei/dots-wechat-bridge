@@ -201,8 +201,58 @@ class PreflightTests(unittest.TestCase):
         self.assertTrue(result['read_only'])
         self.assertFalse(result['production_started'])
         self.assertFalse(result['startup_authorized'])
-        self.assertTrue({'profile_not_ready', 'runtime_key_not_ready', 'client_not_ready', 'setup_approval_not_ready'}.issubset(result['local_blockers']))
+        self.assertTrue({'profile_not_ready', 'runtime_key_not_ready', 'client_not_ready'}.issubset(result['local_blockers']))
+        self.assertNotIn('setup_approval_not_ready', result['local_blockers'])
         self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_connection_diagnosis_without_production_approval_is_read_only_not_authorized(self):
+        self.ready_files(); self.binding()
+        (self.root/'runtime/setup-approval.json').unlink()
+        paths_before = {str(path.relative_to(self.root)) for path in self.root.rglob('*')}
+        files_before = {str(path.relative_to(self.root)): (path.read_bytes(), path.stat().st_mtime_ns)
+                        for path in self.root.rglob('*') if path.is_file()}
+        with patch.object(self.install.sys, 'prefix', str(self.root/'.venv')), \
+             patch.object(self.install.importlib.metadata, 'distribution', side_effect=self.distribution), \
+             patch.object(self.install.subprocess, 'run', side_effect=AssertionError('no process')), \
+             patch.object(self.install.os, 'execv', side_effect=AssertionError('no client')), \
+             patch('socket.create_connection', side_effect=AssertionError('no network')):
+            result = self.install.preflight(self.root, scope='connection_check')
+        self.assertEqual(result['local_blockers'], [])
+        self.assertTrue(result['local_setup_complete'])
+        self.assertEqual(result['configuration_metadata']['setup_approval'],
+                         {'status': 'missing', 'scope_requirement': 'not_required_for_this_scope'})
+        self.assertFalse(result['startup_authorized'])
+        self.assertFalse(result['production_started'])
+        self.assertEqual(result['external_checks']['platform_authorization'], 'not_verified')
+        self.assertEqual(result['external_checks']['mcp_connectivity'], 'not_verified')
+        self.assertEqual(result['external_checks']['phone_receipt'], 'not_tested')
+        self.assertEqual({str(path.relative_to(self.root)) for path in self.root.rglob('*')}, paths_before)
+        self.assertEqual({str(path.relative_to(self.root)): (path.read_bytes(), path.stat().st_mtime_ns)
+                          for path in self.root.rglob('*') if path.is_file()}, files_before)
+
+    def test_missing_production_approval_still_blocks_connect_and_direct_start(self):
+        self.ready_files(); self.binding()
+        (self.root/'runtime/setup-approval.json').unlink()
+        files_before = {str(path.relative_to(self.root)): path.read_bytes()
+                        for path in self.root.rglob('*') if path.is_file()}
+        with patch.object(self.install.sys, 'prefix', str(self.root/'.venv')), \
+             patch.object(self.install.importlib.metadata, 'distribution', side_effect=self.distribution), \
+             patch.object(self.install, 'check', side_effect=AssertionError('no check process')), \
+             patch.object(self.install, 'run', side_effect=AssertionError('no QR or service')), \
+             patch.object(self.install.os, 'execv', side_effect=AssertionError('no client')), \
+             patch('socket.create_connection', side_effect=AssertionError('no network')):
+            result = self.install.connect(self.root)
+            self.assertEqual(result['scope'], 'production')
+            self.assertEqual(result['local_blockers'], ['setup_approval_not_ready'])
+            self.assertEqual(result['configuration_metadata']['setup_approval']['scope_requirement'],
+                             'required_for_this_scope')
+            self.assertEqual(result['status'], 'setup_incomplete')
+            self.assertFalse(result['startup_authorized'])
+            self.assertFalse(result['production_started'])
+            with self.assertRaises(FileNotFoundError):
+                self.install.start(self.root)
+        self.assertEqual({str(path.relative_to(self.root)): path.read_bytes()
+                          for path in self.root.rglob('*') if path.is_file()}, files_before)
 
     def test_connection_check_does_not_require_or_read_history(self):
         self.binding()

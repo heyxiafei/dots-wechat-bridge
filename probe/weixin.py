@@ -4,6 +4,7 @@ Protocol reference: https://github.com/Tencent/openclaw-weixin/blob/main/docs/pr
 Credentials stay in the private server database. Exceptions contain fixed categories only.
 """
 import base64
+from contextlib import nullcontext
 import hashlib
 import http.client
 import ipaddress
@@ -409,6 +410,10 @@ class WeixinStore:
             self.db.execute("UPDATE weixin_outbox SET status='delivery_unknown',error_kind='restart_during_send' WHERE status='sending'")
 
     def bind_confirmed(self, result):
+        # A fresh-production generation is pinned to the successful binding
+        # epoch. A login must never silently rotate it or revive held sends.
+        if getattr(self.probe, 'fresh_admission', None) is not None:
+            raise WeixinError('fresh_rebinding_requires_reactivation')
         values = [result.get(k) for k in ("ilink_bot_id", "ilink_user_id", "bot_token")]
         if result.get("status") != "confirmed" or not all(isinstance(x, str) and 0 < len(x) <= 8192 for x in values):
             raise WeixinError("incomplete_owner_binding")
@@ -451,22 +456,33 @@ class WeixinStore:
         observed_ids = []
         now = self.clock()
         with self.lock, self.db:
-            for msg in msgs:
+            fresh = getattr(self.probe, 'fresh_admission', None)
+            # Validate the entire raw batch before parsing any body or media.
+            # The normal historical timestamp fallback is not admission proof.
+            admissions = fresh.inspect_batch(account, msgs, now) if fresh is not None else None
+            for position, msg in enumerate(msgs):
+                admission = admissions[position] if admissions is not None else None
+                if fresh is not None and admission is None:
+                    continue
                 if (not isinstance(msg, dict) or msg.get("from_user_id") != account["owner"]
                         or msg.get("group_id") or msg.get("room_id") or msg.get("message_type") != 1
                         or msg.get("message_state") == 1 or msg.get("delete_time_ms")
                         or msg.get("to_user_id") not in (None, "", account["id"])):
                     continue
-                source = msg.get("message_id") or msg.get("client_id")
+                source = admission['source_id'] if admission is not None else msg.get("message_id") or msg.get("client_id")
                 if not isinstance(source, (str, int)) or isinstance(source, bool) or not source:
                     continue
-                identity = "wx_" + hashlib.sha256(encoded([account["id"], account["owner"], str(source)]).encode()).hexdigest()[:32]
+                identity = (admission['identity'] if admission is not None else
+                            "wx_" + hashlib.sha256(encoded([account["id"], account["owner"], str(source)]).encode()).hexdigest()[:32])
+                created_ms = admission['source_ms'] if admission is not None else msg.get("create_time_ms")
+                if fresh is not None:
+                    fresh.validate_candidate_in_transaction(identity, str(source), created_ms)
                 items = msg.get("item_list", [])
                 content, has_media, manifest = describe_inbound(identity, items)
                 manifest['command_context_v1'] = capture_command_context(msg)
                 unsupported = manifest['issue_codes']
-                created_ms = msg.get("create_time_ms")
-                created_ms = created_ms if isinstance(created_ms, (float, int)) and 0 < created_ms <= (now + 300) * 1000 else now * 1000
+                if admission is None:
+                    created_ms = created_ms if isinstance(created_ms, (float, int)) and 0 < created_ms <= (now + 300) * 1000 else now * 1000
                 changed = self.db.execute("""INSERT OR IGNORE INTO weixin_inbox
                     (id,account,peer,source_id,text,created_at,kind,unsupported,event_id)
                     VALUES(?,?,?,?,?,?,?,?,NULL)""",
@@ -474,6 +490,8 @@ class WeixinStore:
                      "mixed" if content and has_media else "media" if has_media else "text" if content else "unsupported", encoded(unsupported))).rowcount
                 if not changed:
                     continue
+                if fresh is not None:
+                    fresh.admit_in_transaction(identity, str(source), created_ms)
                 # The source inventory shares the inbox/cursor transaction.
                 # Duplicate retrievals preserve the first accepted source facts;
                 # legacy inputs without an inventory remain explicitly unknown.
@@ -495,8 +513,18 @@ class WeixinStore:
                     old = self.db.execute("SELECT source_ms FROM weixin_peers WHERE account=? AND peer=?", (account["id"], account["owner"])).fetchone()
                     if not old or created_ms >= old["source_ms"]:
                         self.db.execute("INSERT OR REPLACE INTO weixin_peers VALUES(?,?,?,?,?)", (account["id"], account["owner"], context, created_ms, now))
-                        self.db.execute("UPDATE weixin_outbox SET status='queued',next_at=0 WHERE account=? AND peer=? AND status='context_required' AND attempts<3",
-                                        (account["id"], account["owner"]))
+                        if fresh is not None:
+                            fresh.record_context_in_transaction(identity, context, created_ms)
+                        if fresh is None:
+                            self.db.execute("UPDATE weixin_outbox SET status='queued',next_at=0 WHERE account=? AND peer=? AND status='context_required' AND attempts<3",
+                                            (account["id"], account["owner"]))
+                        else:
+                            held = self.db.execute("SELECT message_id,source_message_id FROM weixin_outbox WHERE account=? AND peer=? AND status='context_required' AND attempts<3",
+                                                   (account['id'], account['owner'])).fetchall()
+                            for outgoing in held:
+                                if fresh.allows_source(outgoing['source_message_id']):
+                                    self.db.execute("UPDATE weixin_outbox SET status='queued',next_at=0 WHERE message_id=? AND status='context_required' AND attempts<3",
+                                                    (outgoing['message_id'],))
                 self.probe.receipts.observe_new_in_transaction(identity)
             cursor = response.get("get_updates_buf")
             self.db.execute("UPDATE weixin_accounts SET cursor=CASE WHEN ?!='' THEN ? ELSE cursor END,last_poll=?,last_error=NULL WHERE id=?",
@@ -720,6 +748,9 @@ class WeixinStore:
         return self._queue_reply(message_id, text, phase, require_ack=True)
 
     def _queue_reply(self, message_id, text, phase, require_ack):
+        fresh = getattr(self.probe, 'fresh_admission', None)
+        if fresh is not None:
+            fresh.require_source(message_id)
         self.read_message(message_id)
         if not isinstance(text, str) or not text.strip() or len(text.encode()) > 8192:
             raise WeixinError("reply_text_must_be_1_to_8192_bytes")
@@ -727,6 +758,8 @@ class WeixinStore:
         requested_text_used = True
         with self.lock, self.db:
             self.db.execute('BEGIN IMMEDIATE')
+            if fresh is not None:
+                fresh.require_source(message_id)
             old = self.db.execute("SELECT text,ack_origin FROM weixin_outbox WHERE message_id=?", (send_id,)).fetchone()
             if old:
                 if old["text"] != text:
@@ -756,6 +789,8 @@ class WeixinStore:
         return {**self.send_status(send_id), 'requested_text_used': requested_text_used}
 
     def queue_notification(self, notification_id, text):
+        if getattr(self.probe, 'fresh_admission', None) is not None:
+            raise WeixinError('fresh_notifications_disabled')
         account = self.account()
         if not account:
             raise WeixinError("not_bound")
@@ -777,9 +812,25 @@ class WeixinStore:
 
     def check_queue_capacity(self):
         # Called inside the existing lock/transaction; terminal history does not count.
-        count = self.db.execute("SELECT count(*) FROM weixin_outbox WHERE status IN ('queued','preparing','sending','context_required','auth_required')").fetchone()[0]
+        fresh = getattr(self.probe, 'fresh_admission', None)
+        if fresh is None:
+            count = self.db.execute("SELECT count(*) FROM weixin_outbox WHERE status IN ('queued','preparing','sending','context_required','auth_required')").fetchone()[0]
+        else:
+            fresh.require_ready()
+            pending = self.db.execute("SELECT source_message_id FROM weixin_outbox WHERE status IN ('queued','preparing','sending','context_required','auth_required')")
+            count = sum(fresh.allows_source(row['source_message_id']) for row in pending)
         if count >= 32:
             raise WeixinError("send_queue_busy")
+
+    def _pending_receipt(self, fresh):
+        if not self.probe.receipts.pending_receipt():
+            return False
+        if fresh is None:
+            return True
+        # Historical receipt intents must not stall a newly admitted attachment.
+        waiting = self.db.execute("SELECT message_id FROM owner_receipt_intents WHERE activation_id=? AND state='waiting' AND decision NOT IN ('queue_full','uncertain_source')",
+                                  (self.probe.receipts.activation_id,))
+        return any(fresh.allows_source(row['message_id']) for row in waiting)
 
     def send_status(self, message_id):
         account = self.account()
@@ -841,6 +892,9 @@ class WeixinStore:
         account = self.account()
         if not account or account["status"] != "ready":
             return False
+        fresh = getattr(self.probe, 'fresh_admission', None)
+        if fresh is not None:
+            fresh.require_ready()
         now = self.clock()
         with self.lock, self.db:
             # Waiting finals do not monopolize the queue. Only their own ack
@@ -855,10 +909,14 @@ class WeixinStore:
                     WHEN outgoing.kind='reply_ack' AND outgoing.ack_origin='system_receipt' THEN 0
                     WHEN outgoing.kind IN ('reply','reply_ack') AND outgoing.upload_id IS NULL THEN 1
                     ELSE 2 END,outgoing.created_at,outgoing.rowid""", (now, account["id"]))
-            row = next((item for item in rows if item['kind'] != 'notification' or
-                        not self.aihot_hold_all_notifications and item['message_id'] not in self.aihot_held_notification_ids), None)
+            row = next((item for item in rows
+                        if (fresh is None or item['kind'] != 'notification' and fresh.allows_source(item['source_message_id']))
+                        and (item['kind'] != 'notification' or
+                             not self.aihot_hold_all_notifications and item['message_id'] not in self.aihot_held_notification_ids)), None)
             if not row:
                 return False
+            if fresh is not None:
+                fresh.require_source(row['source_message_id'])
             if row['attempts'] >= 3:
                 self.db.execute("UPDATE weixin_outbox SET status='rejected',error_kind='retry_limit' WHERE message_id=?", (row['message_id'],))
                 return True
@@ -869,7 +927,9 @@ class WeixinStore:
             if not context:
                 self.db.execute("UPDATE weixin_outbox SET status='context_required',error_kind='fresh_inbound_required' WHERE message_id=?", (row["message_id"],))
                 return True
-            if row['upload_id'] and not row['item_json'] and self.probe.receipts.pending_receipt():
+            if fresh is not None:
+                fresh.require_context(context)
+            if row['upload_id'] and not row['item_json'] and self._pending_receipt(fresh):
                 return False
             if row['upload_id'] and not row['item_json']:
                 self.db.execute("UPDATE weixin_outbox SET status='preparing' WHERE message_id=?", (row['message_id'],))
@@ -897,6 +957,10 @@ class WeixinStore:
             row = self.db.execute('SELECT * FROM weixin_outbox WHERE message_id=?', (row['message_id'],)).fetchone()
             if not account or account['status'] != 'ready' or row['status'] != 'queued':
                 return True
+            if fresh is not None:
+                fresh.require_source(row['source_message_id'])
+                if row['account'] != account['id'] or row['peer'] != account['owner']:
+                    raise WeixinError('fresh_source_owner_mismatch')
             if row['kind'] == 'notification' and (self.aihot_hold_all_notifications or row['message_id'] in self.aihot_held_notification_ids):
                 return False
             if row['upload_id']:
@@ -910,6 +974,8 @@ class WeixinStore:
             if not context:
                 self.db.execute("UPDATE weixin_outbox SET status='context_required',error_kind='fresh_inbound_required' WHERE message_id=?", (row['message_id'],))
                 return True
+            if fresh is not None:
+                fresh.require_context(context)
             changed = self.db.execute("UPDATE weixin_outbox SET status='sending',attempts=attempts+1,context_at=?,post_started_at=? WHERE message_id=? AND status='queued' AND attempts=?",
                                       (context["received_at"], self.clock(), row["message_id"], row['attempts'])).rowcount
             if changed != 1:
@@ -917,11 +983,19 @@ class WeixinStore:
         outcome, kind, code = "delivery_unknown", "uncertain_api_result", None
         diagnostic = {"response_received": False}
         response_server_id = None
+        post_attempted = False
         try:
-            if row['upload_id']:
-                result = self.client.send_items(account, row['peer'], [json.loads(row['item_json'])], row['client_id'], context['token'])
-            else:
-                result = self.client.send(account, row["peer"], row["text"], row["client_id"], context["token"])
+            with self.lock if fresh is not None else nullcontext():
+                if fresh is not None:
+                    if fresh is not getattr(self.probe, 'fresh_admission', None):
+                        raise WeixinError('fresh_policy_changed_before_post')
+                    fresh.require_source(row['source_message_id'])
+                    fresh.require_context(context)
+                post_attempted = True
+                if row['upload_id']:
+                    result = self.client.send_items(account, row['peer'], [json.loads(row['item_json'])], row['client_id'], context['token'])
+                else:
+                    result = self.client.send(account, row["peer"], row["text"], row["client_id"], context["token"])
             if not isinstance(result, dict):
                 raise WeixinError("invalid_api_response")
             codes = (result.get("ret"), result.get("errcode"))
@@ -968,6 +1042,12 @@ class WeixinStore:
                      "api_response_too_large", "invalid_api_destination", "non_public_api_address", "invalid_api_endpoint"}
             kind = error.kind if error.kind in known else "unexpected_send_error"
             diagnostic = {"response_received": False, "failure_kind": kind}
+            if not post_attempted and fresh is not None:
+                # The committed slot remains terminal: no API invocation took
+                # place, and a later policy change must not replay this slot.
+                outcome, kind = 'rejected', 'fresh_prepost_gate_failed'
+                diagnostic = {"response_received": False, "post_attempted": False,
+                              "failure_kind": kind}
             if error.kind == "api_http_error" and type(error.code) is int:
                 # An HTTP response is evidence, not proof of message acceptance.
                 # Keep delivery_unknown and the existing no-resend behavior.
@@ -977,9 +1057,21 @@ class WeixinStore:
             # Timeout/network errors after POST may have delivered; never blindly resend.
             kind = "unexpected_send_error"
             diagnostic = {"response_received": False, "failure_kind": kind}
+            if not post_attempted and fresh is not None:
+                outcome, kind = 'rejected', 'fresh_prepost_gate_failed'
+                diagnostic = {"response_received": False, "post_attempted": False,
+                              "failure_kind": kind}
+        if fresh is not None and outcome in ('queued', 'context_required', 'auth_required'):
+            # This mode has no retained history to authorize replay of a
+            # refused commitment. Keep its original slot terminal even when
+            # the provider suggests a recoverable auth/context/rate condition.
+            outcome, kind = 'rejected', 'fresh_send_rejected'
         if row['ack_origin'] == 'system_receipt' and outcome in ('queued','context_required','auth_required'):
             outcome, kind = 'rejected', 'system_receipt_post_rejected'
         with self.lock, self.db:
+            if fresh is not None and not post_attempted:
+                self.db.execute('UPDATE weixin_outbox SET attempts=?,post_started_at=NULL WHERE message_id=?',
+                                (row['attempts'], row['message_id']))
             if outcome == "context_required":
                 latest = self.db.execute("SELECT received_at FROM weixin_peers WHERE account=? AND peer=?", (account["id"], row["peer"])).fetchone()
                 if latest and latest["received_at"] > context["received_at"] and row["attempts"] + 1 < 3:
@@ -999,6 +1091,9 @@ class WeixinStore:
         account = self.account()
         if not account or account["status"] != "ready" or self.clock() < self.poll_after:
             return False
+        fresh = getattr(self.probe, 'fresh_admission', None)
+        if fresh is not None:
+            fresh.require_ready()
         try:
             response = self.client.poll(account)
             self.ingest(account, response)

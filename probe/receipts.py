@@ -104,6 +104,11 @@ class OwnerReceiptStore:
 
     def start_policy(self):
         self.running = False
+        # Future-only production does not opt into fixed system ACKs. Preserve
+        # the private policy and old receipts without rearming or rewriting them.
+        if getattr(self.probe, 'fresh_admission', None) is not None:
+            self.activation_id = None
+            return
         try:
             config = self._config()
         except WeixinError:

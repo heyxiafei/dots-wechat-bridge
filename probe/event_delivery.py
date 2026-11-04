@@ -8,9 +8,11 @@ except ImportError:
 
 
 EVENT_DELIVERY_VERSION = 'event-delivery-status-v1'
-STATES = {'queued', 'delivered', 'acknowledged', 'cancelled', 'failed'}
+STATES = {'queued', 'delivered', 'acknowledged', 'cancelled', 'failed', 'delivery_unknown'}
 ERRORS = {'subscription_inactive', 'retry_limit', 'webhook_transport_error',
-          'webhook_retryable_http', 'webhook_permanent_http'}
+          'webhook_retryable_http', 'webhook_permanent_http',
+          'fresh_restart_during_delivery', 'fresh_admission_changed_before_post',
+          'fresh_webhook_rejected', 'fresh_webhook_result_unknown'}
 
 
 def finite(value):
@@ -78,7 +80,7 @@ class EventDeliveryStatus:
                 code = event['last_http_status']
                 reason = event['last_error_kind']
                 blocked = None
-                if status in ('failed', 'cancelled'):
+                if status in ('failed', 'cancelled', 'delivery_unknown'):
                     blocked = 'event_' + status
                 elif status == 'invalid':
                     blocked = 'invalid_event_status'

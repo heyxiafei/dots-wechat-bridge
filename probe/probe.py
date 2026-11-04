@@ -351,6 +351,9 @@ class Probe:
         self.aihot_operator_result = 'not_requested'
         self.event_wakeup = threading.Event()
         self.clock = clock
+        # A fresh production generation is restored from its durable marker;
+        # it is never inferred from an empty database or a local worker lock.
+        self.fresh_admission = None
         self.bridge_version = BUILD_VERSION
         self.post = post or (lambda url, body, hdrs: post_https(url, body, hdrs, set(allowed_hosts)))
         self.allowed_hosts = set(allowed_hosts)
@@ -424,6 +427,15 @@ class Probe:
                 # Optional email initialization cannot break the existing
                 # owner-only Weixin, receipts, subscriptions or B consumer.
                 self.aihot_email = None
+        if __package__:
+            from .fresh_production import FreshAdmission
+        else:
+            from fresh_production import FreshAdmission
+        try:
+            self.fresh_admission = FreshAdmission.restore(self)
+        except Exception:
+            self.db.close()
+            raise
 
     def notify_events(self):
         self.event_wakeup.set()
@@ -459,6 +471,9 @@ class Probe:
         return "sub_" + hashlib.sha256(canonical(["owner-only-tunnel", url, name, {}]).encode()).hexdigest()[:32]
 
     def subscribe(self, params):
+        fresh = self.fresh_admission
+        if fresh is not None:
+            fresh.before_subscribe(params)
         sub_id = self.subscription_id(params)
         secret = params["delivery"].get("secret")
         key_bytes(secret)
@@ -476,7 +491,7 @@ class Probe:
         sub = {"id": sub_id, "url": params["delivery"]["url"], "secret": secret,
                "old_secret": old["secret"] if old and old["secret"] != secret else (old["old_secret"] if old else None),
                "rotate_until": now + 300 if old and old["secret"] != secret else (old["rotate_until"] if old else 0)}
-        cached = (old and old["secret"] == secret and old["verified_at"] > now - 300
+        cached = (fresh is None and old and old["secret"] == secret and old["verified_at"] > now - 300
                   and (old['expires'] is None or old['expires'] > now))
         if not cached:
             challenge = secrets.token_urlsafe(24)
@@ -496,6 +511,10 @@ class Probe:
             # Callback I/O releases the lock. Recheck under the write lock so
             # concurrent different destinations cannot both become active.
             self.db.execute("BEGIN IMMEDIATE")
+            if fresh is not None:
+                if fresh is not self.fresh_admission:
+                    raise RpcError(-32602, "Fresh admission changed during verification")
+                fresh.before_subscribe(params)
             if self.db.execute("SELECT id FROM subscriptions WHERE id!=? AND "
                     "(expires IS NULL OR expires>?) AND name=?",
                     (sub_id, self.clock(), params["name"])).fetchone():
@@ -510,14 +529,20 @@ class Probe:
             self.db.execute("INSERT OR REPLACE INTO subscriptions(id,url,secret,old_secret,rotate_until,expires,verified_at,name,revision) VALUES (?,?,?,?,?,?,?,?,?)",
                             (sub_id, sub["url"], secret, sub["old_secret"], sub["rotate_until"], expires,
                              old["verified_at"] if cached else now, params["name"], secrets.token_hex(16)))
+        result = {"id": sub_id, "refreshBefore": None if expires is None else self.iso(expires), "cursor": None, "truncated": False}
+        if fresh is not None:
+            with self.lock:
+                fresh.after_subscribe(result)
         self.notify_events()
-        return {"id": sub_id, "refreshBefore": None if expires is None else self.iso(expires), "cursor": None, "truncated": False}
+        return result
 
     @staticmethod
     def iso(timestamp):
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp))
 
     def unsubscribe(self, params):
+        if self.fresh_admission is not None:
+            raise RpcError(-32602, "Fresh production preserves its original subscription")
         sub_id = self.subscription_id(params)
         with self.lock, self.db:
             self.db.execute("DELETE FROM subscriptions WHERE id=?", (sub_id,))
@@ -525,6 +550,8 @@ class Probe:
         return {}
 
     def emit(self):
+        if self.fresh_admission is not None:
+            raise RpcError(-32602, "Fresh production admits only its approved owner message events")
         now = self.clock()
         with self.lock, self.db:
             sub = self.db.execute("SELECT id FROM subscriptions WHERE (expires IS NULL OR expires>?) AND name=?", (now, EVENT_NAME)).fetchone()
@@ -656,13 +683,34 @@ class Probe:
         if not account:
             return 0
         with self.lock, self.db:
-            sub = self.db.execute("SELECT id FROM subscriptions WHERE name=? AND (expires IS NULL OR expires>?)", (MESSAGE_EVENT, self.clock())).fetchone()
-            queued = self.db.execute("SELECT count(*) FROM pings WHERE status='queued'").fetchone()[0]
+            fresh = self.fresh_admission
+            if fresh is None:
+                sub = self.db.execute("SELECT id FROM subscriptions WHERE name=? AND (expires IS NULL OR expires>?)", (MESSAGE_EVENT, self.clock())).fetchone()
+                queued = self.db.execute("SELECT count(*) FROM pings WHERE status='queued'").fetchone()[0]
+            else:
+                try:
+                    fresh.require_ready()
+                except WeixinError:
+                    return 0
+                sub = self.db.execute("SELECT id FROM subscriptions WHERE id=? AND name=? AND (expires IS NULL OR expires>?)",
+                                      (fresh.subscription_id, MESSAGE_EVENT, self.clock())).fetchone()
+                queued = sum(self._fresh_event_allowed(row) for row in self.db.execute(
+                    "SELECT * FROM pings WHERE status='queued'"))
             if not sub or queued >= 64:
                 return 0
-            rows = self.db.execute("""SELECT id,created_at FROM weixin_inbox i WHERE account=? AND peer=? AND event_id IS NULL
+            query = """SELECT id,created_at FROM weixin_inbox i WHERE account=? AND peer=? AND event_id IS NULL
                 AND NOT EXISTS (SELECT 1 FROM weixin_attachments a WHERE a.message_id=i.id AND a.status IN ('queued','downloading'))
-                ORDER BY created_at LIMIT ?""", (account["id"], account["owner"], min(32, 64 - queued))).fetchall()
+                ORDER BY created_at"""
+            capacity = min(32, 64 - queued)
+            if fresh is None:
+                rows = self.db.execute(query + " LIMIT ?", (account["id"], account["owner"], capacity)).fetchall()
+            else:
+                rows = []
+                for row in self.db.execute(query, (account["id"], account["owner"])):
+                    if fresh.allows_source(row['id']):
+                        rows.append(row)
+                        if len(rows) == capacity:
+                            break
             for row in rows:
                 event_id = "evt_" + hashlib.sha256(canonical([MESSAGE_EVENT, sub["id"], row["id"]]).encode()).hexdigest()[:32]
                 body = canonical({"eventId": event_id, "name": MESSAGE_EVENT, "timestamp": self.iso(row["created_at"]),
@@ -672,16 +720,46 @@ class Probe:
                 self.delivery_timing.queued(row["id"], self.clock())
         return len(rows)
 
+    def _fresh_event_allowed(self, row):
+        """A local admission check, never proof of remote writer exclusion."""
+        fresh = self.fresh_admission
+        if (fresh is None or row['name'] != MESSAGE_EVENT
+                or row['sub_id'] != fresh.subscription_id
+                or not row['message_id'] or not fresh.allows_source(row['message_id'])):
+            return False
+        expected = "evt_" + hashlib.sha256(canonical(
+            [MESSAGE_EVENT, fresh.subscription_id, row['message_id']]).encode()).hexdigest()[:32]
+        source = self.db.execute('SELECT event_id,created_at FROM weixin_inbox WHERE id=?',
+                                 (row['message_id'],)).fetchone()
+        if row['id'] != expected or source is None or source['event_id'] != row['id']:
+            return False
+        expected_body = canonical({'eventId': expected, 'name': MESSAGE_EVENT,
+                                   'timestamp': self.iso(source['created_at']),
+                                   'data': {'message_id': row['message_id']}, 'cursor': None})
+        return row['body'] == expected_body
+
     def recover_event_deliveries(self):
         # Sole daemon only, after its worker lock. The receiver still deduplicates
         # stable event IDs: a previous HTTP result may have been lost. Never
         # replay terminal events or change Weixin uncertain-send records.
         with self.lock, self.db:
             self.db.execute('BEGIN IMMEDIATE')
+            if self.fresh_admission is not None:
+                # A prior POST may have succeeded before its local result was
+                # committed. Keep the original event ID and never replay it.
+                self.db.execute("""UPDATE pings SET status='delivery_unknown',
+                    lease_token=NULL,lease_until=NULL,last_error_kind='fresh_restart_during_delivery'
+                    WHERE status='queued' AND attempts>0 AND name=? AND sub_id=?""",
+                    (MESSAGE_EVENT, self.fresh_admission.subscription_id))
+                return
             self.db.execute("UPDATE pings SET lease_token=NULL,lease_until=NULL WHERE status='queued' AND lease_token IS NOT NULL")
 
     def event_next_wait(self, maximum=.5):
         with self.lock:
+            if self.fresh_admission is not None:
+                eligible = [max(row['next_at'], row['lease_until'] or 0) for row in self.db.execute(
+                    "SELECT * FROM pings WHERE status='queued' AND attempts=0") if self._fresh_event_allowed(row)]
+                return min(maximum, max(.01, min(eligible) - self.clock())) if eligible else maximum
             row = self.db.execute("SELECT min(max(next_at,coalesce(lease_until,0))) FROM pings WHERE status='queued' AND NOT ("+
                                   OWNER_EVENT_AWAITS_RENEWAL+")", (self.clock(),)).fetchone()
         return maximum if row[0] is None else min(maximum, max(.01, row[0] - self.clock()))
@@ -700,13 +778,18 @@ class Probe:
 
     def deliver_once(self):
         now = self.clock()
+        fresh = self.fresh_admission
         with self.lock, self.db:
             self.db.execute('BEGIN IMMEDIATE')
             # Preserve an expired owner event exactly as queued, without
             # letting it block unrelated events or spin the pump. Only an
             # authorized protocol refresh of this same ID makes it eligible.
-            row = self.db.execute("SELECT * FROM pings WHERE status='queued' AND next_at<=? AND (lease_until IS NULL OR lease_until<=?) AND NOT ("+
-                                  OWNER_EVENT_AWAITS_RENEWAL+") ORDER BY rowid LIMIT 1", (now, now, now)).fetchone()
+            query = "SELECT * FROM pings WHERE status='queued' AND next_at<=? AND (lease_until IS NULL OR lease_until<=?) AND NOT (" + OWNER_EVENT_AWAITS_RENEWAL + ") ORDER BY rowid"
+            if fresh is None:
+                row = self.db.execute(query + " LIMIT 1", (now, now, now)).fetchone()
+            else:
+                row = next((candidate for candidate in self.db.execute(query, (now, now, now))
+                            if candidate['attempts'] == 0 and self._fresh_event_allowed(candidate)), None)
             if not row:
                 return False
             sub_row = self.db.execute("SELECT * FROM subscriptions WHERE id=? AND (expires IS NULL OR expires>?)", (row["sub_id"], now)).fetchone()
@@ -742,7 +825,24 @@ class Probe:
                     self._defer_email_delivery(row['id'], token)
                 return True
         try:
-            code, _ = self.post(sub['url'], body, headers(sub, row['id'], body, now))
+            if fresh is None:
+                code, _ = self.post(sub['url'], body, headers(sub, row['id'], body, now))
+            else:
+                # Keep the local identity stable until the POST starts. This
+                # local lock does not claim to fence another host or writer.
+                with self.lock:
+                    current = self.db.execute('SELECT * FROM pings WHERE id=?', (row['id'],)).fetchone()
+                    current_sub = self.db.execute('SELECT revision FROM subscriptions WHERE id=?', (sub['id'],)).fetchone()
+                    if (fresh is not self.fresh_admission or current is None
+                            or current['status'] != 'queued' or current['lease_token'] != token
+                            or current_sub is None or current_sub['revision'] != sub['revision']
+                            or not self._fresh_event_allowed(current)):
+                        with self.db:
+                            self.db.execute("""UPDATE pings SET status='cancelled',lease_token=NULL,
+                                lease_until=NULL,last_error_kind='fresh_admission_changed_before_post'
+                                WHERE id=? AND status='queued' AND lease_token=?""", (row['id'], token))
+                        return True
+                    code, _ = self.post(sub['url'], body, headers(sub, row['id'], body, now))
             if type(code) is not int or not 100 <= code <= 599:
                 code = 0
         except Exception:
@@ -752,6 +852,10 @@ class Probe:
         state, reason = ('delivered', None) if ok else ('queued', 'webhook_transport_error' if not code else 'webhook_retryable_http')
         if not ok and (code in (410,413) or (300 <= code < 500 and code not in (408,429)) or attempt >= 6):
             state, reason = 'failed', 'retry_limit' if attempt >= 6 else 'webhook_permanent_http'
+        if fresh is not None and not ok:
+            # The new generation deliberately has no automatic event replay.
+            # An HTTP error does not establish whether the remote run began.
+            state, reason = ('failed', 'fresh_webhook_rejected') if 300 <= code < 500 and code not in (408,429) else ('delivery_unknown', 'fresh_webhook_result_unknown')
         with self.lock, self.db:
             self.db.execute('BEGIN IMMEDIATE')
             changed = self.db.execute("""UPDATE pings SET status=?,lease_token=NULL,lease_until=NULL,
@@ -761,7 +865,7 @@ class Probe:
                 (state, code or None, reason, finished, ok, finished, row['id'], token)).rowcount
             if changed and ok and row['message_id']:
                 self.delivery_timing.accepted(row['message_id'], finished)
-            if changed and code == 410:
+            if changed and code == 410 and fresh is None:
                 self.db.execute("UPDATE subscriptions SET expires=0,revision=? WHERE id=? AND revision=?",
                                 (secrets.token_hex(16), sub['id'], sub['revision']))
         return True
@@ -1095,7 +1199,11 @@ def main():
     parser.add_argument("--emit", action="store_true", help="Queue one synthetic event for the existing subscription")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--offline", action="store_true", help="Isolated installation check: no network, subscriptions, receivers or senders")
+    parser.add_argument("--fresh-production", action="store_true",
+                        help="Use the explicitly approved durable future-message cutover; never migrate old queues")
     args = parser.parse_args()
+    if args.fresh_production and (args.emit or args.status or args.offline):
+        parser.error('--fresh-production cannot be combined with --emit, --status or --offline')
     os.umask(0o077)
     if args.offline:
         if args.emit or args.status:
@@ -1115,7 +1223,13 @@ def main():
     # The public CLI has no trusted operator configuration injection. Owning a
     # worker lock is not permission to enable optional private consumers.
     # Retained policy markers still fail closed in the original sender guard.
-    probe = Probe(args.state_dir, allowed_hosts=args.allow_callback_host)
+    try:
+        probe = Probe(args.state_dir, allowed_hosts=args.allow_callback_host)
+    except (WeixinError, OSError, ValueError):
+        print('production state validation failed; no workers started', file=sys.stderr)
+        if worker_lock is not None:
+            worker_lock.close()
+        return 1
     # A bounded acceptance state is never a production queue. Its original
     # read-only receipt remains available through bounded-dot-stdio.py.
     if (not args.status and probe.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='weixin_bounded_dot_check'").fetchone()):
@@ -1124,6 +1238,26 @@ def main():
         if worker_lock is not None:
             worker_lock.close()
         return 1
+    if not args.status and probe.fresh_admission is not None and not args.fresh_production:
+        print('fresh production state requires its approved startup mode; rollback must stay stopped', file=sys.stderr)
+        probe.close()
+        if worker_lock is not None:
+            worker_lock.close()
+        return 1
+    if args.fresh_production:
+        try:
+            if __package__:
+                from .fresh_production import FreshAdmission, read_approval_file
+            else:
+                from fresh_production import FreshAdmission, read_approval_file
+            approval = read_approval_file(Path(args.state_dir).parent / 'setup-approval.json')
+            probe.fresh_admission = FreshAdmission.activate(probe, approval)
+        except (WeixinError, OSError, ValueError):
+            print('fresh production approval or durable cutover validation failed; no workers started', file=sys.stderr)
+            probe.close()
+            if worker_lock is not None:
+                worker_lock.close()
+            return 1
     if args.emit or args.status:
         try:
             print(canonical(probe.emit() if args.emit else probe.status()))

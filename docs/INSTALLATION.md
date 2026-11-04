@@ -36,7 +36,7 @@ SDK 不适用时，优先核对 [Apple 独立 CLT 的正常更新入口](https:/
 
 `preflight` 的退出码 0 仅表示诊断已返回，**不是连通或上线成功**。文件存在、可执行位或本地 ready 绑定均不证明系统允许运行、平台授权、MCP 连通或手机收到；这些项分别保留 `not_verified`/`not_tested`。诊断不接收能授予启动权的布尔参数，不生成 setup-approval，也不替代真实的批准与外部回执。用其它 Python 执行时，依赖项会要求改用本安装的 `.venv/bin/python`，不会启动它来探测。
 
-`--scope connection_check` 用于完整 DOT/MCP 接入的本机准备检查，不需要旧历史、也不读取旧历史。若本人仅要求验证新 Mac 到微信的一条新消息传输，应选择更窄的范围：
+`--scope connection_check` 用于完整 DOT/MCP 接入的本机准备检查，不需要旧历史、也不读取旧历史。生产启动用的 `setup-approval.json` 在此仅展示元数据，缺失不阻塞这项诊断；没有本地缺项仍不代表授权或连通。`--scope production`、`connect` 和 `run` 继续要求原生产批准与启动检查。若本人仅要求验证新 Mac 到微信的一条新消息传输，应选择更窄的范围：
 
 ```sh
 /absolute/new/project/.venv/bin/python /absolute/new/project/scripts/install-project.py preflight --prefix /absolute/new/project --scope weixin_transport_check

@@ -497,6 +497,9 @@ class MediaStore:
         return total
 
     def process_once(self):
+        fresh = getattr(self.probe, 'fresh_admission', None)
+        if fresh is not None:
+            fresh.require_ready()
         self.cleanup()
         now = self.clock()
         with self.lock, self.db:
@@ -505,8 +508,9 @@ class MediaStore:
             exhausted = self.db.execute("""UPDATE weixin_attachments SET status='error',
                 error_kind='media_attempts_exhausted',ref_json=NULL
                 WHERE status='queued' AND attempts>=?""", (MAX_DOWNLOAD_ATTEMPTS,)).rowcount
-            row = self.db.execute("SELECT * FROM weixin_attachments WHERE status='queued' AND attempts<? AND next_at<=? ORDER BY created_at LIMIT 1",
-                                  (MAX_DOWNLOAD_ATTEMPTS, now)).fetchone()
+            rows = self.db.execute("SELECT * FROM weixin_attachments WHERE status='queued' AND attempts<? AND next_at<=? ORDER BY created_at",
+                                   (MAX_DOWNLOAD_ATTEMPTS, now))
+            row = next((item for item in rows if fresh is None or fresh.allows_source(item['message_id'])), None)
             if row:
                 self.db.execute("UPDATE weixin_attachments SET status='downloading',attempts=attempts+1 WHERE id=?", (row['id'],))
         if exhausted:
@@ -516,9 +520,14 @@ class MediaStore:
         temp = self.path(row['id']).with_suffix('.part')
         try:
             ref = json.loads(row['ref_json'])
+            if fresh is not None:
+                with self.lock:
+                    fresh.require_source(row['message_id'])
             raw = decrypt(self.download(ref['url']), ref)
             mime = validate_plain(raw, ref)
             with self.lock, self.db:
+                if fresh is not None:
+                    fresh.require_source(row['message_id'])
                 if self.cache_usage() + len(raw) > MAX_CACHE:
                     raise WeixinError('media_cache_full')
                 fd = os.open(temp, os.O_CREAT | os.O_TRUNC | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
@@ -568,6 +577,9 @@ class MediaStore:
         return [self.metadata(row) for row in rows]
 
     def authorized(self, mid, aid):
+        fresh = getattr(self.probe, 'fresh_admission', None)
+        if fresh is not None:
+            fresh.require_source(mid)
         account = self.probe.weixin.account()
         self.path(aid)
         if not account:
