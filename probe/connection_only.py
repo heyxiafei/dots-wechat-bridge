@@ -6,7 +6,6 @@ update that subscription. No credentials are read from Weixin account rows.
 """
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -23,10 +22,12 @@ if __package__:
     from .probe import (Probe, RpcError, VERSION, BUILD_VERSION, EMAIL_EVENT, canonical,
                         acquire_worker_lock, post_https)
     from .connection_probe import BoundedOutput, DeadlineExpired, valid_id
+    from .diagnostic_state import EMPTY_STOPPED_TRIAL, EmptyDiagnosticError, validate_empty_stopped_trial
 else:
     from probe import (Probe, RpcError, VERSION, BUILD_VERSION, EMAIL_EVENT, canonical,
                        acquire_worker_lock, post_https)
     from connection_probe import BoundedOutput, DeadlineExpired, valid_id
+    from diagnostic_state import EMPTY_STOPPED_TRIAL, EmptyDiagnosticError, validate_empty_stopped_trial
 
 MODE = 'original_subscription_connection_only'
 POLICY_TABLES = ('aihot_auto_resume', 'owner_receipt_activations', 'owner_receipt_baseline',
@@ -39,13 +40,6 @@ EMPTY_TABLES = POLICY_TABLES + ('weixin_inbox', 'weixin_outbox', 'pings', 'weixi
                               'weixin_attachments', 'weixin_uploads')
 MARKER_TABLES = {'weixin_fresh_cutover', 'weixin_fresh_admissions', 'weixin_fresh_contexts',
                  'weixin_bounded_dot_check'}
-EMPTY_STOPPED_TRIAL = 'weixin_new_message_check'
-TRIAL_COLUMNS = (
-    ('singleton','INTEGER',0,1), ('round_id','TEXT',1,0), ('phase','TEXT',1,0),
-    ('started_at','REAL',1,0), ('expires_at','REAL',1,0), ('binding_hash','TEXT',1,0),
-    ('approval_hash','TEXT',1,0), ('isolation_hash','TEXT',1,0),
-    ('source_message_id','TEXT',0,0), ('send_id','TEXT',0,0),
-    ('error_kind','TEXT',1,0), ('updated_at','REAL',1,0))
 SUB_COLUMNS = {'id', 'url', 'secret', 'old_secret', 'rotate_until', 'expires',
                'verified_at', 'name', 'revision'}
 
@@ -125,26 +119,10 @@ class SubscriptionConnection(Probe):
         It is not a production promotion, authorization, cleanup or a fence.
         The original row, including all opaque evidence hashes, stays untouched.
         """
-        columns = self.db.execute('PRAGMA table_xinfo(weixin_new_message_check)').fetchall()
-        expected = [(index,name,kind,required,None,primary,0)
-                    for index,(name,kind,required,primary) in enumerate(TRIAL_COLUMNS)]
-        if [tuple(row) for row in columns] != expected:
-            raise ValueError('connection_only_trial_schema_mismatch')
-        # Deliberately do not select the old binding/approval/isolation hashes.
-        rows = self.db.execute('''SELECT singleton,phase,started_at,expires_at,
-            source_message_id,send_id,updated_at FROM weixin_new_message_check''').fetchall()
-        now = self.clock()
-        if len(rows) != 1 or type(now) not in (int,float) or not math.isfinite(now):
-            raise ValueError('connection_only_trial_not_empty_stopped')
-        row = rows[0]
-        times = (row['started_at'],row['expires_at'],row['updated_at'])
-        if (row['singleton'] != 1 or row['phase'] != 'stopped'
-                or row['source_message_id'] is not None or row['send_id'] is not None
-                or any(type(value) not in (int,float) or not math.isfinite(value) for value in times)
-                or not 0 < times[0] < times[1] <= now
-                or not 0 < times[1]-times[0] <= 180
-                or not times[0] <= times[2] <= now):
-            raise ValueError('connection_only_trial_not_empty_stopped')
+        try:
+            validate_empty_stopped_trial(self.db, self.clock())
+        except EmptyDiagnosticError as error:
+            raise ValueError('connection_only_trial_' + str(error)) from None
 
     @staticmethod
     def _authorize_sql(action, table, column, database, source):

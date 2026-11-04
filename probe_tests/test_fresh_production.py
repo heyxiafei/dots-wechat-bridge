@@ -70,6 +70,76 @@ class FreshProductionTests(unittest.TestCase):
         self.probe.subscribe(self.params)
         self.policy.require_ready()
 
+    def pin_subscription(self):
+        self.probe.subscribe(self.params)
+        row=self.probe.db.execute('SELECT id,verified_at,revision,expires FROM subscriptions').fetchone()
+        spec=self.approval['handoff']
+        spec['subscription_receipt']={'subscription_id':row[0],'route_sha256':spec['route_sha256'],
+            'binding_sha256':spec['binding_sha256'],'verified_at':row[1],'revision':row[2],'expires_at':row[3]}
+        self.write_approval()
+
+    def test_approved_persisted_subscription_activates_and_restarts_without_network(self):
+        self.pin_subscription()
+        original=tuple(self.probe.db.execute('SELECT * FROM subscriptions').fetchone())
+        self.activate().require_ready()
+        mid=self.ingest()
+        self.assertEqual(self.challenges,1)
+        self.assertEqual(tuple(self.probe.db.execute('SELECT * FROM subscriptions').fetchone()),original)
+        self.probe.close()
+        self.probe=Probe(self.state,post=self.post,allowed_hosts=['callback.example.com'],clock=lambda:self.now)
+        self.assertTrue(self.probe.fresh_admission.allows_source(mid))
+        self.assertEqual(self.challenges,1)
+        self.assertEqual(tuple(self.probe.db.execute('SELECT * FROM subscriptions').fetchone()),original)
+
+    def test_initial_seed_requires_exact_receipt_from_after_current_approval(self):
+        self.pin_subscription()
+        original=copy.deepcopy(self.approval['handoff']['subscription_receipt'])
+        for updates in ({'revision':'f'*32},{'expires_at':1100.},{'verified_at':997.},
+                        {'route_sha256':'f'*64},{'binding_sha256':'f'*64}):
+            with self.subTest(updates=updates):
+                self.approval['handoff']['subscription_receipt']={**original,**updates}
+                self.write_approval()
+                with self.assertRaises(WeixinError):
+                    self.activate()
+                self.assertIsNone(self.probe.db.execute("SELECT 1 FROM sqlite_master WHERE name='weixin_fresh_cutover'").fetchone())
+        self.assertEqual(self.challenges,1)
+
+    def test_expired_seed_blocks_but_real_same_id_renewal_survives_restart(self):
+        self.params['ttlMs']=1000
+        self.pin_subscription()
+        seed=copy.deepcopy(self.approval['handoff']['subscription_receipt'])
+        self.activate().require_ready()
+        self.now=1002.
+        self.probe.close()
+        self.probe=Probe(self.state,post=self.post,allowed_hosts=['callback.example.com'],clock=lambda:self.now)
+        with self.assertRaises(WeixinError):
+            self.probe.fresh_admission.require_ready()
+        self.assertEqual(self.probe.db.execute('SELECT expires FROM subscriptions').fetchone()[0],1001.)
+        self.probe.subscribe(self.params)
+        self.probe.fresh_admission.require_ready()
+        self.assertEqual(self.challenges,2)
+        renewed=tuple(self.probe.db.execute('SELECT verified_at,revision,expires FROM subscriptions').fetchone())
+        self.assertGreater(renewed[0],seed['verified_at'])
+        self.probe.close()
+        self.probe=Probe(self.state,post=self.post,allowed_hosts=['callback.example.com'],clock=lambda:self.now)
+        self.probe.fresh_admission.require_ready()
+        self.assertEqual(self.challenges,2)
+        self.assertEqual(tuple(self.probe.db.execute('SELECT verified_at,revision,expires FROM subscriptions').fetchone()),renewed)
+        self.assertEqual(self.approval['handoff']['subscription_receipt'],seed)
+
+    def test_persisted_seed_never_accepts_regressed_verification_or_changed_binding(self):
+        self.pin_subscription()
+        self.activate().require_ready()
+        with self.probe.db:
+            self.probe.db.execute('UPDATE subscriptions SET verified_at=997')
+        with self.assertRaises(WeixinError):
+            self.probe.fresh_admission.require_ready()
+        with self.probe.db:
+            self.probe.db.execute('UPDATE subscriptions SET verified_at=1000')
+            self.probe.db.execute("UPDATE weixin_binding_epoch SET epoch='changed-binding'")
+        with self.assertRaises(WeixinError):
+            self.probe.fresh_admission.require_ready()
+
     def message(self, **changes):
         msg = {'message_id':'18446744073709551615','from_user_id':'fixture-owner',
                'to_user_id':'fixture-bot','message_type':1,'message_state':2,
@@ -176,6 +246,67 @@ class FreshProductionTests(unittest.TestCase):
         self.probe.db.commit()
         with self.assertRaisesRegex(WeixinError, 'fresh_diagnostic_state_not_promotable'):
             self.activate()
+
+    def stopped_trial(self, **changes):
+        row = {'singleton':1,'round_id':'e'*32,'phase':'stopped','started_at':800.,
+               'expires_at':920.,'binding_hash':'f'*64,'approval_hash':'a'*64,
+               'isolation_hash':'b'*64,'source_message_id':None,'send_id':None,
+               'error_kind':'poll_api_timeout','updated_at':920.}
+        row.update(changes)
+        with self.probe.db:
+            self.probe.db.execute('''CREATE TABLE weixin_new_message_check (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), round_id TEXT NOT NULL,
+                phase TEXT NOT NULL, started_at REAL NOT NULL, expires_at REAL NOT NULL,
+                binding_hash TEXT NOT NULL, approval_hash TEXT NOT NULL, isolation_hash TEXT NOT NULL,
+                source_message_id TEXT, send_id TEXT, error_kind TEXT NOT NULL,
+                updated_at REAL NOT NULL)''')
+            self.probe.db.execute('INSERT INTO weixin_new_message_check VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',tuple(row.values()))
+        return tuple(self.probe.db.execute('SELECT * FROM weixin_new_message_check').fetchone())
+
+    def test_closed_empty_trial_retained_through_fresh_activation_and_restart(self):
+        before = self.stopped_trial()
+        policy = self.activate()
+        with self.assertRaisesRegex(WeixinError, 'fresh_original_handshake_required'):
+            policy.require_ready()
+        self.probe.subscribe(self.params)
+        mid = self.ingest()
+        self.assertTrue(policy.allows_source(mid))
+        self.assertEqual(tuple(self.probe.db.execute('SELECT * FROM weixin_new_message_check').fetchone()),before)
+        self.probe.close()
+        self.probe = Probe(self.state,post=self.post,allowed_hosts=['callback.example.com'],clock=lambda:self.now)
+        self.assertEqual(tuple(self.probe.db.execute('SELECT * FROM weixin_new_message_check').fetchone()),before)
+        self.assertFalse(self.probe.fresh_admission.allows_source(mid))
+        self.probe.subscribe(self.params)
+        self.assertTrue(self.probe.fresh_admission.allows_source(mid))
+        self.assertEqual(self.probe.fresh_admission.spec['cutoff_ms'],999000)
+
+    def test_closed_trial_is_not_writer_authorization(self):
+        before = self.stopped_trial()
+        self.approval['isolation_mode']='no_existing_writer_verified'
+        self.write_approval()
+        with self.assertRaisesRegex(WeixinError,'fresh_writer_isolation_required'):
+            self.activate()
+        self.assertEqual(tuple(self.probe.db.execute('SELECT * FROM weixin_new_message_check').fetchone()),before)
+
+    def test_trial_with_source_send_or_nonterminal_state_still_rejected(self):
+        cases=({'phase':'waiting'}, {'phase':'delivery_unknown'}, {'phase':'rejected'},
+               {'expires_at':1010.,'started_at':900.}, {'source_message_id':'synthetic-source'},
+               {'send_id':'synthetic-send'}, {'source_message_id':''}, {'send_id':''})
+        for changes in cases:
+            with self.subTest(changes=changes):
+                before=self.stopped_trial(**changes)
+                with self.assertRaisesRegex(WeixinError,'fresh_diagnostic_state_not_promotable'):
+                    self.activate()
+                self.assertEqual(tuple(self.probe.db.execute('SELECT * FROM weixin_new_message_check').fetchone()),before)
+                with self.probe.db:
+                    self.probe.db.execute('DROP TABLE weixin_new_message_check')
+
+    def test_empty_trial_does_not_allow_imported_messages_or_used_cursor(self):
+        before=self.stopped_trial()
+        self.ingest()
+        with self.assertRaisesRegex(WeixinError,'fresh_new_state_required'):
+            self.activate()
+        self.assertEqual(tuple(self.probe.db.execute('SELECT * FROM weixin_new_message_check').fetchone()),before)
 
     def test_self_declared_first_install_cannot_bypass_fencing(self):
         self.approval['isolation_mode'] = 'no_existing_writer_verified'

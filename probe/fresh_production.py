@@ -14,8 +14,10 @@ import stat
 
 if __package__:
     from .weixin import WeixinError, encoded
+    from .diagnostic_state import EMPTY_STOPPED_TRIAL, EmptyDiagnosticError, validate_empty_stopped_trial
 else:
     from weixin import WeixinError, encoded
+    from diagnostic_state import EMPTY_STOPPED_TRIAL, EmptyDiagnosticError, validate_empty_stopped_trial
 
 MODE = 'fresh_after_approved_cutover'
 TABLE = 'weixin_fresh_cutover'
@@ -87,15 +89,62 @@ def validate_approval(approval, now):
     if (type(cut) is not int or type(approved) is not int or approved <= 0
             or cut < approved or cut > int(now * 1000) + 300000):
         fail('cutoff_invalid')
-    return dict(handoff)
+    spec = dict(handoff)
+    if 'subscription_receipt' in spec:
+        seed = spec['subscription_receipt']
+        fields = {'subscription_id','route_sha256','binding_sha256','verified_at','revision','expires_at'}
+        if (not isinstance(seed, dict) or set(seed) != fields
+                or any(seed.get(key) != spec[key] for key in ('subscription_id','route_sha256','binding_sha256'))
+                or not isinstance(seed.get('revision'), str) or not re.fullmatch(r'[0-9a-f]{32}',seed['revision'])
+                or type(seed.get('verified_at')) not in (int,float)
+                or not math.isfinite(seed['verified_at'])
+                or not approved / 1000 <= seed['verified_at'] <= now):
+            fail('subscription_seed_invalid')
+        expiry = seed.get('expires_at')
+        if expiry is not None and (type(expiry) not in (int,float) or not math.isfinite(expiry)
+                                   or expiry <= seed['verified_at']):
+            fail('subscription_seed_invalid')
+    return spec
+
+
+def persisted_subscription_matches(db, spec, now, *, exact):
+    """Inspect the normal challenge-written subscription, never modify it.
+
+    First activation pins the actual approved receipt exactly. On restart the
+    same normal table may contain a later legitimate same-ID refresh; no second
+    ledger, stale request replay or synthesized extension is involved.
+    """
+    seed = spec.get('subscription_receipt')
+    if seed is None:
+        return False
+    row = db.execute('''SELECT id,url,name,verified_at,revision,expires
+        FROM subscriptions WHERE id=?''', (spec['subscription_id'],)).fetchone()
+    if row is None:
+        return False
+    identity, url, name, verified, revision, expiry = row
+    if (name != 'weixin.message' or identity != spec['subscription_id']
+            or hashlib.sha256(encoded(['owner-only-tunnel',url,name,{}]).encode()).hexdigest() != spec['route_sha256']
+            or type(verified) not in (int,float) or not math.isfinite(verified)
+            or not max(seed['verified_at'],spec['approved_at_ms']/1000) <= verified <= now
+            or not isinstance(revision,str) or not re.fullmatch(r'[0-9a-f]{32}',revision)
+            or expiry is not None and (type(expiry) not in (int,float) or not math.isfinite(expiry)
+                                       or expiry <= now or expiry <= verified)):
+        return False
+    return not exact or (verified == seed['verified_at'] and revision == seed['revision']
+                         and expiry == seed['expires_at'])
 
 
 def inspect_state(db, approval, now):
     """Read-only activation preflight; empty history is permitted, never deleted."""
     spec = validate_approval(approval, now)
     tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if tables & {'weixin_bounded_dot_check', 'weixin_new_message_check'}:
+    if 'weixin_bounded_dot_check' in tables:
         fail('diagnostic_state_not_promotable')
+    if EMPTY_STOPPED_TRIAL in tables:
+        try:
+            validate_empty_stopped_trial(db, now)
+        except EmptyDiagnosticError:
+            fail('diagnostic_state_not_promotable')
     if binding_fingerprint(db) != spec['binding_sha256']:
         fail('binding_changed')
     if TABLE in tables:
@@ -111,6 +160,8 @@ def inspect_state(db, approval, now):
                 fail('new_state_required')
         if db.execute("SELECT 1 FROM weixin_accounts WHERE cursor!='' OR last_poll IS NOT NULL").fetchone():
             fail('new_state_required')
+        if 'subscription_receipt' in spec and not persisted_subscription_matches(db,spec,now,exact=True):
+            fail('subscription_seed_mismatch_or_expired')
     for row in db.execute('SELECT id,url,name FROM subscriptions'):
         route = hashlib.sha256(encoded(['owner-only-tunnel', row[1], row[2], {}]).encode()).hexdigest()
         if (row[0] != spec['subscription_id'] or row[2] != 'weixin.message'
@@ -124,7 +175,7 @@ class FreshAdmission:
         self.probe, self.db = probe, probe.db
         self.spec, self.approval_hash = spec, approval_hash
         self.subscription_id = spec['subscription_id']
-        self.handshaken = False
+        self.handshaken = persisted_subscription_matches(self.db,spec,probe.clock(),exact=False)
 
     @classmethod
     def restore(cls, probe):
@@ -205,6 +256,9 @@ class FreshAdmission:
         route = hashlib.sha256(encoded(['owner-only-tunnel', row[1], row[2], {}]).encode()).hexdigest()
         if route != self.spec['route_sha256']:
             fail('original_subscription_required')
+        if ('subscription_receipt' in self.spec
+                and not persisted_subscription_matches(self.db,self.spec,self.probe.clock(),exact=False)):
+            fail('subscription_seed_not_current')
 
     def require_ready(self):
         self._identity()

@@ -50,6 +50,7 @@ The private approval retains `isolation_mode: old_writer_fenced`,
 | `platform_route_evidence_reference` | Reference to actual original route verification |
 | `subscription_continuity_evidence_reference` | Reference to actual original subscription continuation evidence |
 | `fresh_cutover_evidence_reference` | Reference to the explicit future-only scope approval |
+| `subscription_receipt` (optional) | Verified original subscription metadata, permitting durable recovery as described below |
 
 `binding_sha256` uses sorted-key, ASCII, compact JSON through
 `probe.fresh_production.binding_fingerprint`; it selects no credentials.
@@ -59,16 +60,44 @@ database by digest. The runtime reads this same exact file; it never discovers
 or reconstructs an approval from chat, booleans, database locks, or old snapshots.
 
 First activation requires empty inbox, outbox, event queue, peers, attachment
-and upload state plus an unused cursor. Existing bounded diagnostic state is
-never promoted, reset or deleted. Activation persists the immutable generation,
+and upload state plus an unused cursor. `weixin_bounded_dot_check` state is
+never promoted, reset or deleted. A past `weixin_new_message_check` row may
+coexist only when the shared read-only validator confirms the exact original
+schema, one stopped singleton row, a finite expired window of at most 180
+seconds, and actual NULL source/send IDs. The original row is never changed or
+used as approval/fencing evidence. All current production authorization,
+single-writer, binding and subscription conditions still apply; the new
+generation starts from its new approved cutoff. Other diagnostic states remain
+blocked. Activation persists the immutable generation,
 cutoff, binding, subscription, route and approval digest. Restarts reuse them;
 they cannot restart the cutoff at the current time or silently use a new binding.
 
 The MCP process can start waiting for the original subscription. It performs no
-Weixin polling or sending until that exact subscription completes a real callback
-challenge in the current process. The cached verification shortcut is disabled
-in this mode. Subscription expiry blocks processing until that same subscription
-is refreshed. The mode does not delete, disable, recreate or redirect the
+Weixin polling or sending without a currently valid original subscription proof.
+By default that proof is a real callback challenge in the current process; the
+cached verification shortcut is disabled. If a real original subscription was
+already verified after the applicable user approval, the approval may instead
+pin its `subscription_receipt`: exactly `subscription_id`, `route_sha256`,
+`binding_sha256`, `verified_at`, `revision`, and `expires_at`. These are observed
+metadata, not secrets or a self-declared verified boolean. First activation
+requires an exact match to the existing subscription row and an unexpired grant;
+it neither writes that row nor sends a challenge or replays registration.
+
+After activation, the ordinary `subscriptions` table remains authoritative: its
+normal write path already requires successful callback verification. A restart
+may resume the same ID/route/binding when the recorded verification is no earlier
+than both the approval and pinned receipt and the grant is still valid. A normal
+same-ID renewal may advance verification time and revision. No duplicate
+validation ledger is required, and restoring does not extend expiry or copy
+signing secrets. This relies on the same trusted local database boundary as the
+rest of the runtime; it does not claim to resist arbitrary database tampering.
+Expired grants, regressed verification, wrong routes or changed bindings remain
+blocked. A process with an expired grant can receive a real same-ID renewal;
+expiry alone is never rewritten to manufacture one. Old approvals without the
+optional receipt retain their previous current-process verification behavior.
+
+Subscription expiry blocks processing until that same subscription is
+refreshed. The mode does not delete, disable, recreate or redirect the
 subscription; a webhook 410 terminates that event without changing subscription
 records.
 

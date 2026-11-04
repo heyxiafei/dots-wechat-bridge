@@ -45,8 +45,10 @@ receipt: its exact original 12-column schema must contain exactly one singleton
 row with phase `stopped`, finite ordered timestamps, an elapsed lifetime of at
 most 180 seconds, and actual NULL source/send IDs. The record must already be
 expired. This permits only the original subscription handshake; the entire
-diagnostic row remains untouched, and the production fresh-mode gate still
-rejects the marker. Active, unexpired, malformed, empty, admitted or sent trial
+diagnostic row remains untouched. The production fresh-mode shares this exact
+empty-state check but independently requires its current authorization,
+single-writer, binding, cutoff and real subscription handshake; connection-only
+does not satisfy those conditions. Active, unexpired, malformed, empty, admitted or sent trial
 records do not qualify. Old approval/isolation hash values are not read or
 treated as current authorization.
 

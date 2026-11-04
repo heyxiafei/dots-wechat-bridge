@@ -56,9 +56,9 @@
       "sha256": "ed014a6ec314cd1f52ec8c2e25f0596aa9a1077725337ac9aeb39cf3ce9a0107"
     },
     {
-      "bytes": 5780,
+      "bytes": 5950,
       "path": "docs/CONNECTION-ONLY.md",
-      "sha256": "1d32b7228568e2f68db6ccb926a7ff09578645e6f0abd085b315aa4a564c5936"
+      "sha256": "039a35dddf33c948939f7a55b193bafc849c4072c3d3da12e0abd191a3a8580d"
     },
     {
       "bytes": 4919,
@@ -96,9 +96,9 @@
       "sha256": "c7b7a5de8ba6c6f368fb57d43205fa33cd6d64a6837f13e21a7f2d882cb28dd0"
     },
     {
-      "bytes": 7844,
+      "bytes": 9950,
       "path": "docs/FRESH-PRODUCTION.md",
-      "sha256": "77996af5735d47683f939a5f53a4448cd6764f3753666bef6d6114a25bb76504"
+      "sha256": "71dd78f6b45f6637f7b70568c509d2d8e5cb8f1963fa055f5e31dbd812d3e117"
     },
     {
       "bytes": 543,
@@ -266,9 +266,9 @@
       "sha256": "498e1bb39be940639610943bd7c5b1386cadc86fe232052a0412105155f57986"
     },
     {
-      "bytes": 16827,
+      "bytes": 15425,
       "path": "probe/connection_only.py",
-      "sha256": "243a43722875c024e43498d57ac0a21e39834f467645a66500049259a1859cb9"
+      "sha256": "d644fc0d99778587714d4a2423c88bfcd52ae4f6acfa366d81d6acb17b35e563"
     },
     {
       "bytes": 14149,
@@ -279,6 +279,11 @@
       "bytes": 8302,
       "path": "probe/deliverable_contract.py",
       "sha256": "13b0d4c37cbf7696e3d432ffd4ac945978ddc3e3bfc8e6acb92ddd8a77cfee41"
+    },
+    {
+      "bytes": 1851,
+      "path": "probe/diagnostic_state.py",
+      "sha256": "74889f37c58c419c4f41053d97f5956ab5470966d07c22ffeb4acd6b0c846888"
     },
     {
       "bytes": 11732,
@@ -316,9 +321,9 @@
       "sha256": "80fb4b2baafda17ef425764845476ac35844e4d1a8b076f6e32f55cd34f3009a"
     },
     {
-      "bytes": 15412,
+      "bytes": 18727,
       "path": "probe/fresh_production.py",
-      "sha256": "358d1c23cad3d7b9d00928ba476f9078d5fc37a695ce7117e9767b9efb10962b"
+      "sha256": "fb881a209de2ed4be36c6149027eae919b26f39157a0a99d43c673593ec01b31"
     },
     {
       "bytes": 4092,
@@ -721,9 +726,9 @@
       "sha256": "4879dd31acc1fb8a869d65ce2582a98e30bda483921be0d8d2062e5165122c3a"
     },
     {
-      "bytes": 13983,
+      "bytes": 21887,
       "path": "probe_tests/test_fresh_production.py",
-      "sha256": "aca206b7407b46ccdf9822755b170564b34e525102372988e27b70772bfa811f"
+      "sha256": "cf4cfd498f4d83e67c1fc3205fa4c1b38292f3974028a41069fb512157740fe5"
     },
     {
       "bytes": 17028,
@@ -1011,9 +1016,9 @@
       "sha256": "2e6cf969d2272838117c293ed9a8e44f1acb60759b7452ef5394d620cba0ccff"
     },
     {
-      "bytes": 17274,
+      "bytes": 17307,
       "path": "scripts/scan-public-bundle.py",
-      "sha256": "b163919e69c2380078bb59c7d7790a8c2ac657da6f71d8e73a0ed711baa18461"
+      "sha256": "2252d29d184d84cdbd206b9ffb95a64c895ee04c04082fcfa10e7d10313c7057"
     },
     {
       "bytes": 1610,
