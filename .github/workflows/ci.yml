@@ -1,0 +1,33 @@
+name: Offline release verification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.11', '3.13']
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - run: python -m pip install -r requirements.lock
+      - name: Export only reviewed source files
+        run: python -B scripts/build-public-bundle.py --output "$RUNNER_TEMP/reviewed-release"
+      - name: Verify hashes, privacy, schema and all offline tests
+        run: python -B "$RUNNER_TEMP/reviewed-release/scripts/verify-release.py"

@@ -38,6 +38,14 @@ result = coordinator.handle_fixed_command(
 
 读取前同时核查远端 ack/final 和本地 ack/final 的 claimed/unknown/denied/submitted；已有记录优先协调原 ID，不读新额度造成内容冲突。sync/async 同消息共用 single-flight 标记，不持线程锁跨 await；取消只释放读阶段标记，不清除已存在的持久提交。读取后重新核验消息、scope、原记录，再经原 permit 提交；并发普通回复已占槽则查询原提交，不另发额度。同步入口遇 async reader 返回 `requires_async_usage_reader`，不提交虚假结果。
 
+同步入口识别全部 awaitable，包括 Future、Task 和自定义 awaitable，不能把未等待的结果格式化成未知额度并占用 final。未启动的原生 coroutine 会关闭，并明确尚未执行；可能已经启动的其他 awaitable 标为 `official_call_attempted=True`、`official_result_pending=True`，保留原对象等待 async 入口。该标记表示调用已经尝试，不证明官方结果成功或本人已收到。
+
+provider 在内存中最多保留一份未完成读取，只允许同一 capability 对象、已核绑定和原 `request_ref` 接手；handler 自动传原 message_id。其他消息或已有等待者返回 `usage_reader_busy`，不再次调用 reader，不消费原结果。取消等待者保留原读取，下一次同请求可继续等待；不会主动取消原官方任务。已完成结果不缓存，权限拒绝一旦实际取得即由原 handler 持久保存。内存交接不是跨进程恢复机制，不能宣称进程退出后仍能恢复未完成的官方调用；生产宿主应直接使用与 reader 匹配的 async 入口。
+
+同步与异步路径共享结果校验和展示函数；额度读取完成时间与当前校验时间分开。余额映射耗时或恢复等待不能刷新旧结果的年龄，超过300秒或已越过reset的用量继续显示未知。该修复不创建官方reader或账户授权，真实宿主接线仍须独立验收。
+
+最终提交前，在第二次owner读取与当前permit完成之后、发送claim之前，再按原 `read_finished_at` 和周窗口reset校验一次。跨过有效期时改为明确未知并保存实际提交文字的digest，不重读官方数据、不改读取时间；provider/capability在过程中撤销或替换则停止等待重新核验。已有原动作仍先返回原状态，不借新校验覆盖旧承诺。该边界只能保证本地提交时的校验，不能把外部工具排队或手机到达时间承诺为零。
+
 `reply()` 先调用现有 `read_weixin_message` 核owner来源及当前ack/final，再分派原幂等回复工具；短问直接final，长任务ack→final，已有final查原send_id。没有notification回退。
 
 新回复须可编码为 UTF-8、非空白且不超过8192 bytes，与现有微信工具限制一致。无效新文本在claim/permit/发送前失败，宿主可修正尚未提交的内容后再准备；不自动截断或分片。若原槽或本地账本已承诺、拒绝或未知，先保留原动作/ID；坏的新文本不能掩盖原状态，修正文案也不能解除它。

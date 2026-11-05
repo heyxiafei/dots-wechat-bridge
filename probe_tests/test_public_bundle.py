@@ -205,7 +205,7 @@ class PublicBuilderTests(unittest.TestCase):
         self.assertTrue(BUILD.build(output, fixture, dry_run=True)["ok"])
         manifest = json.loads((output / "PUBLIC-BUNDLE-MANIFEST.json").read_text())
         self.assertNotIn(str(self.parent), json.dumps(manifest))
-        self.assertEqual("48709d9fc72e9bdf4037c0ae907a75a376fd6ff5",
+        self.assertEqual("056cce66dadd83521c279ee309ef204e290ded6b",
                          manifest["release_basis"]["public_main_commit"])
         expected_paths = set(SCAN.SOURCE_PATHS) | set(SCAN.BASELINE_PATHS)
         self.assertEqual(expected_paths, {item["path"] for item in manifest["files"]})
