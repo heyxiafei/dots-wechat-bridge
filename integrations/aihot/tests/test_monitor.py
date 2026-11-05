@@ -584,8 +584,46 @@ class MonitorTests(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(m.Invalid):
                 m.strict_json(raw)
 
+    def test_json_depth_limit_accepts_boundary_and_rejects_before_parser(self):
+        for opening, closing in (('[', ']'), ('{"value":', '}'),
+                                 ('{"value":[', ']}')):
+            levels = m.MAX_JSON_DEPTH // (2 if '[' in opening and '{' in opening else 1)
+            raw = opening * levels + '0' + closing * levels
+            with self.subTest(opening=opening):
+                self.assertEqual(m.strict_json(raw), json.loads(raw))
+                with mock.patch.object(m.json, 'loads', side_effect=AssertionError('parser reached')) as parser:
+                    with self.assertRaisesRegex(m.Invalid, '^response_too_deep$'):
+                        m.strict_json('[' + raw + ']')
+                    parser.assert_not_called()
+
+    def test_json_depth_scanner_ignores_string_brackets_and_honors_escapes(self):
+        texts = ['[{' * (m.MAX_JSON_DEPTH + 1), ']}' * (m.MAX_JSON_DEPTH + 1),
+                 'quoted " [{ value', 'escaped \\ [{ value',
+                 'escaped quote \\\" [{ value', 'trailing backslash \\']
+        for text in texts:
+            with self.subTest(text=text):
+                raw = json.dumps({'text': text})
+                self.assertEqual(m.strict_json(raw), {'text': text})
+                # An escaped backslash before the closing quote must not hide
+                # the nested array that follows the string value.
+                hostile = ('{"text":' + json.dumps(text) + ',"nested":'
+                           + '[' * m.MAX_JSON_DEPTH + '0' + ']' * m.MAX_JSON_DEPTH + '}')
+                with self.assertRaisesRegex(m.Invalid, '^response_too_deep$'):
+                    m.strict_json(hostile)
+
+    def test_json_depth_limit_covers_supported_byte_encodings(self):
+        raw = '[' * (m.MAX_JSON_DEPTH + 1) + '0' + ']' * (m.MAX_JSON_DEPTH + 1)
+        value = {'text': '["\\'}
+        for encoding in ('utf-8', 'utf-8-sig', 'utf-16', 'utf-16-le', 'utf-16-be',
+                         'utf-32', 'utf-32-le', 'utf-32-be'):
+            for container in (bytes, bytearray):
+                with self.subTest(encoding=encoding, container=container.__name__):
+                    self.assertEqual(m.strict_json(container(json.dumps(value).encode(encoding))), value)
+                    with self.assertRaisesRegex(m.Invalid, '^response_too_deep$'):
+                        m.strict_json(container(raw.encode(encoding)))
+
     def test_deep_corrupt_state_is_fail_closed_without_network(self):
-        # Small hostile input can exceed the stdlib parser recursion limit.
+        # Small hostile input exceeds the explicit pre-parser nesting bound.
         (self.data / 'state.json').write_text('[' * 2000 + '0' + ']' * 2000)
         result, transport = self.poll(T, payload(T, [event()]))
         self.assertEqual(result['result'], 'local_state_error')
@@ -596,7 +634,7 @@ class MonitorTests(unittest.TestCase):
         def hostile_transport(unused_etag):
             return 200, {}, m.strict_json('[' * 2000 + '0' + ']' * 2000)
         result = m.poll(self.data, now=T + 1200, transport=hostile_transport)
-        self.assertIn(result['result'], ('malformed_response', 'invalid_json', 'response_too_deep'))
+        self.assertEqual(result['result'], 'response_too_deep')
         self.assertFalse(result['dispatch_enabled'])
         self.assert_no_active()
 
