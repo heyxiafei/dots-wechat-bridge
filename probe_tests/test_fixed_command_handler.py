@@ -229,6 +229,45 @@ class FixedCommandHandlerTests(HandlerFixture,unittest.TestCase):
         self.assertEqual(result['action'],'dry_run');self.assertFalse(result['authorization_granted'])
         self.assertEqual(self.writes(),[]);self.assertEqual(self.c.db.execute('SELECT count(*) FROM actions').fetchone()[0],0)
 
+    def test_owner_reread_or_permit_delay_cannot_submit_expired_quota(self):
+        for index,(boundary,finish,reset) in enumerate((
+                ('owner_read',401,1000),('permit',401,1000),('permit',101,101))):
+            with self.subTest(boundary=boundary,finish=finish,reset=reset):
+                self.message['message_id']='fixture-delay-'+str(index)
+                self.scope['request_ref']=self.message['message_id']
+                now=[100];owner_reads=[0]
+                self.read.return_value=mcp_quota(reset=reset)
+                self.open();self.c.usage.clock=lambda:now[0]
+                def host(name,args):
+                    if name=='read_weixin_message':
+                        owner_reads[0]+=1
+                        if boundary=='owner_read' and owner_reads[0]==2:now[0]=finish
+                    return self.host(name,args)
+                def permit(*_):
+                    if boundary=='permit':now[0]=finish
+                    return True
+                self.c.call_tool=host;self.c.permit=permit
+                result=self.run_handler()
+                self.assertEqual(result['usage_status'],'stale')
+                self.assertNotIn('71%',self.writes()[-1]['text'])
+                payload={'text':self.writes()[-1]['text']}
+                digest=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+                actual=self.c.db.execute('SELECT digest FROM actions WHERE key=?',(result['key'],)).fetchone()[0]
+                self.assertEqual(actual,digest)
+                self.close()
+        self.assertEqual(self.read.call_count,3)
+        self.assertEqual(len(self.writes()),3)
+
+    def test_provider_revocation_during_permit_stops_before_claim_and_send(self):
+        self.open()
+        def permit(*_):
+            self.c.usage.capability=None
+            return True
+        self.c.permit=permit
+        self.assertEqual(self.run_handler()['action'],'await_usage_provider_verification')
+        self.assertEqual(self.writes(),[])
+        self.assertEqual(self.c.db.execute('SELECT count(*) FROM actions').fetchone()[0],0)
+
 
 class AsyncFixedCommandHandlerTests(HandlerFixture,unittest.IsolatedAsyncioTestCase):
     async def start_blocked_reader(self):
@@ -288,6 +327,43 @@ class AsyncFixedCommandHandlerTests(HandlerFixture,unittest.IsolatedAsyncioTestC
         self.assertEqual(self.run_handler()['action'],'requires_async_usage_reader')
         self.read.assert_not_awaited();self.assertEqual(self.writes(),[])
         self.assertEqual((await self.run_async())['usage_status'],'reported');self.read.assert_awaited_once()
+
+    async def test_sync_future_denial_waits_original_read_and_then_persists_stop(self):
+        future=asyncio.get_running_loop().create_future()
+        future.set_exception(OfficialReadDenied())
+        self.read=Mock(return_value=future);self.open()
+        for _ in range(2):
+            result=self.run_handler()
+            self.assertEqual(result['action'],'requires_async_usage_reader')
+            self.assertTrue(result['official_call_attempted'])
+            self.assertEqual(self.writes(),[])
+        result=await self.run_async()
+        self.assertEqual(result['action'],'stop_permission_denied')
+        self.assertEqual(self.run_handler()['action'],'stop_permission_denied')
+        self.assertEqual(self.read.call_count,1)
+        self.assertEqual(self.writes(),[])
+        self.assertEqual(self.c.db.execute('SELECT state FROM actions').fetchone()[0],'denied')
+
+    async def test_future_for_one_request_never_becomes_another_messages_quota(self):
+        future=asyncio.get_running_loop().create_future()
+        self.read=Mock(return_value=future);self.open()
+        self.assertEqual(self.run_handler()['action'],'requires_async_usage_reader')
+        original=self.message['message_id']
+        self.message['message_id']='another-message';self.scope['request_ref']='another-message'
+        self.assertEqual((await self.run_async())['action'],'usage_reader_busy')
+        self.assertEqual(self.writes(),[])
+        self.message['message_id']=original;self.scope['request_ref']=original
+        future.set_result(mcp_quota())
+        self.assertEqual((await self.run_async())['usage_status'],'reported')
+        self.assertEqual(self.read.call_count,1)
+        self.assertEqual(len(self.writes()),1)
+
+    async def test_provider_revoked_during_read_does_not_submit_result(self):
+        task=await self.start_blocked_reader()
+        self.c.usage.capability=None
+        self.release.set()
+        self.assertEqual((await task)['action'],'await_usage_provider_verification')
+        self.assertEqual(self.writes(),[])
 
 
 class OfficialEnvelopeRegressionTests(unittest.TestCase):

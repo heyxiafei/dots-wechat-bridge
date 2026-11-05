@@ -164,6 +164,46 @@ class FreshProductionTests(unittest.TestCase):
         self.assertTrue(policy.allows_source(mid))
         self.assertEqual(self.probe.db.execute('SELECT source_id FROM weixin_fresh_admissions').fetchone()[0], '18446744073709551615')
 
+    def test_fresh_help_metadata_keeps_hint_without_sending_or_replay(self):
+        self.ready()
+        msg = self.message(item_list=[dict(type=1, text_item={'text': '/help'},
+            create_time_ms=1000000, update_time_ms=1000000,
+            is_completed=True, msg_id='synthetic-text-item')])
+        mid = self.ingest(msg)
+        source = self.probe.weixin.read_message(mid)
+        self.assertTrue(source['inbound_completeness']['command_context_v1'])
+        self.assertEqual(source['inbound_completeness']['command_context_reason_v1'], 'standalone_text_shape')
+        self.assertEqual(source['fixed_command']['kind'], 'help')
+        self.assertEqual(source['fixed_command']['prepared_text'], source['help_menu']['text'])
+        self.assertFalse(source['fixed_command']['automatic_send'])
+        self.assertTrue(source['fixed_command']['owner_intent_verification_required'])
+        original = self.probe.db.execute('SELECT metadata_json FROM weixin_inbound_manifests WHERE message_id=?', (mid,)).fetchone()[0]
+        self.ingest(msg)
+        self.assertEqual(self.probe.db.execute('SELECT count(*) FROM weixin_fresh_admissions').fetchone()[0], 1)
+        self.assertEqual(self.probe.db.execute('SELECT metadata_json FROM weixin_inbound_manifests WHERE message_id=?', (mid,)).fetchone()[0], original)
+        self.assertEqual(self.probe.db.execute('SELECT count(*) FROM weixin_outbox').fetchone()[0], 0)
+        self.assertEqual(self.probe.db.execute('SELECT count(*) FROM pings').fetchone()[0], 0)
+
+    def test_fresh_closed_diagnostic_is_future_only_and_never_grants_hint(self):
+        self.ready()
+        msg = self.message(item_list=[dict(type=1, text_item={'text': '/help'},
+            tool_call_start_item=None, is_completed=False)])
+        mid = self.ingest(msg)
+        source = self.probe.weixin.read_message(mid)
+        capture = source['inbound_completeness']
+        self.assertFalse(capture['command_context_v1'])
+        self.assertEqual(capture['command_context_reason_v1'], 'item_unknown_fields')
+        self.assertEqual(capture['command_item_diagnostic_v1']['fields'],
+                         [{'code': 'official_tool_call_start_item', 'json_type': 'null'}])
+        self.assertEqual(capture['command_item_diagnostic_v1']['metadata']['is_completed'], 'false')
+        self.assertIsNone(source['help_menu'])
+        self.assertIsNone(source['fixed_command'])
+        original = self.probe.db.execute('SELECT metadata_json FROM weixin_inbound_manifests WHERE message_id=?', (mid,)).fetchone()[0]
+        msg['item_list'][0] = dict(type=1, text_item={'text': '/help'}, status='synthetic-private-value')
+        self.ingest(msg)
+        self.assertEqual(self.probe.db.execute('SELECT metadata_json FROM weixin_inbound_manifests WHERE message_id=?', (mid,)).fetchone()[0], original)
+        self.assertEqual(self.probe.db.execute('SELECT count(*) FROM weixin_outbox').fetchone()[0], 0)
+
     def test_restart_preserves_cutoff_and_requires_new_challenge(self):
         self.ready()
         mid = self.ingest()

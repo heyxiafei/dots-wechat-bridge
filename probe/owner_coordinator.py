@@ -15,6 +15,7 @@ import threading
 from .workflow_contract import reply_plan, attachment_plan
 from .official_usage_provider import OfficialUsageProvider
 from .fixed_commands import classify as classify_fixed_command
+from .command_catalog import COMMANDS_BY_NAME
 from .usage_display import UsageBinding
 
 
@@ -77,11 +78,11 @@ class OwnerCoordinator:
     def close(self):
         self.db.close();fcntl.flock(self.lock,fcntl.LOCK_UN);os.close(self.lock)
 
-    def prepare_usage(self, binding):
-        return self.usage.prepare(binding)
+    def prepare_usage(self, binding, *, request_ref=None):
+        return self.usage.prepare(binding, request_ref=request_ref)
 
-    async def prepare_usage_async(self, binding):
-        return await self.usage.prepare_async(binding)
+    async def prepare_usage_async(self, binding, *, request_ref=None):
+        return await self.usage.prepare_async(binding, request_ref=request_ref)
 
     @staticmethod
     def _fixed_scope(scope):
@@ -133,7 +134,7 @@ class OwnerCoordinator:
             if message_id in self._fixed_inflight:
                 return None,{'action':'fixed_command_in_progress'}
             self._fixed_inflight.add(message_id)
-            return (message['text'],hint,self._fixed_scope(scope)),None
+            return (message['text'],hint,self._fixed_scope(scope),self.usage,self.usage.capability),None
 
     @staticmethod
     def _fixed_binding(binding, scope):
@@ -155,17 +156,34 @@ class OwnerCoordinator:
                                               (key,digest,'denied','permission_denied'))
                 return {'action':'stop_permission_denied','usage_status':'permission_denied',
                         'text':prepared['text'],'official_call_attempted':True}
+            if prepared.get('adapter_context_changed') is True:
+                return {'action':'await_usage_provider_verification','official_call_attempted':True}
             message,hint,stop=self._fixed_check(message_id,scope,owner_intent_verified)
             if stop:return stop
-            text,original_hint,original_scope=context
+            text,original_hint,original_scope,original_provider,original_capability=context
             if self._fixed_scope(scope) != original_scope:
                 return {'action':'await_owner_verification'}
             if message['text'] != text or hint != original_hint:
                 return {'action':'fixed_command_changed'}
             if prepared.get('adapter_requires_async') is True:
-                return {'action':'requires_async_usage_reader','official_call_attempted':False}
+                return {'action':'usage_reader_busy' if prepared.get('adapter_busy') is True
+                        else 'requires_async_usage_reader',
+                        'official_call_attempted':prepared.get('official_call_attempted',False),
+                        'official_result_pending':prepared.get('official_result_pending',False)}
+            def command_guard(payload, arguments):
+                # The final owner read and live permit can both take time.
+                # Check freshness at the last local boundary, retaining the
+                # original observation and never invoking the reader again.
+                if hint['kind'] == 'weekly_usage':
+                    if self.usage is not original_provider or self.usage.capability is not original_capability:
+                        return {'action':'await_usage_provider_verification','official_call_attempted':True}
+                    refreshed = self.usage.revalidate_prepared(prepared)
+                    prepared.update(refreshed)
+                    payload['text'] = arguments['text'] = prepared['text']
+                return None
             result=self._reply_checked(message_id,message,prepared['text'],
-                                       task_complete=True,needs_work=False,scope=scope)
+                                       task_complete=True,needs_work=False,scope=scope,
+                                       submission_guard=command_guard)
             return {**result,'fixed_command':hint['kind'],'usage_status':prepared.get('status'),
                     'official_call_attempted':prepared.get('official_call_attempted',False)}
 
@@ -183,8 +201,9 @@ class OwnerCoordinator:
         if stop:return stop
         try:
             hint=context[1]
-            prepared=(self.prepare_usage(self._fixed_binding(binding,scope))
-                      if hint['kind']=='weekly_usage' else {'text':hint['prepared_text']})
+            command=COMMANDS_BY_NAME[hint['kind']]
+            prepared=(self.prepare_usage(self._fixed_binding(binding,scope),request_ref=message_id)
+                      if command.official_reader_required else {'text':hint['prepared_text']})
             return self._finish_fixed(message_id,scope,owner_intent_verified,context,prepared)
         finally:
             with self.serial:self._fixed_inflight.discard(message_id)
@@ -200,8 +219,9 @@ class OwnerCoordinator:
         if stop:return stop
         try:
             hint=context[1]
-            prepared=(await self.prepare_usage_async(self._fixed_binding(binding,scope))
-                      if hint['kind']=='weekly_usage' else {'text':hint['prepared_text']})
+            command=COMMANDS_BY_NAME[hint['kind']]
+            prepared=(await self.prepare_usage_async(self._fixed_binding(binding,scope),request_ref=message_id)
+                      if command.official_reader_required else {'text':hint['prepared_text']})
             return self._finish_fixed(message_id,scope,owner_intent_verified,context,prepared)
         finally:
             with self.serial:self._fixed_inflight.discard(message_id)
@@ -232,11 +252,14 @@ class OwnerCoordinator:
                           'key':key,'send_id':old[2],'api_state':old[3],'owner_received':bool(old[4]),
                           'content_conflict':old[0] != digest}
 
-    def _submit(self, identity, payload, tool, arguments, scope):
+    def _submit(self, identity, payload, tool, arguments, scope, submission_guard=None):
         with self.serial:
             key,digest,old=self._existing(identity,payload)
             if old:return old
             if self.mode == 'dry_run':
+                if submission_guard:
+                    stop=submission_guard(payload,arguments)
+                    if stop:return stop
                 return {'action':'dry_run','tool':tool,'arguments':arguments,'key':key,'authorization_granted':False}
             try:
                 permitted=callable(self.permit) and self.permit(scope,tool) is True
@@ -248,6 +271,13 @@ class OwnerCoordinator:
                 return {'action':'stop_permission_denied','key':key}
             if not permitted:
                 return {'action':'await_current_writer_and_owner_permission','key':key}
+            if submission_guard:
+                stop=submission_guard(payload,arguments)
+                if stop:return stop
+                # A quota can expire during permit. Commit the exact refreshed
+                # text, while any original durable action still takes priority.
+                key,digest,old=self._existing(identity,payload)
+                if old:return old
             # Durable before the tool boundary; a crash/timeout remains uncertain.
             with self.db:self.db.execute('INSERT INTO actions VALUES(?,?,?,NULL,NULL,NULL)',(key,digest,'claimed'))
             try:
@@ -273,7 +303,8 @@ class OwnerCoordinator:
             return self._reply_checked(message_id,message,text,task_complete=task_complete,
                                        needs_work=needs_work,scope=scope)
 
-    def _reply_checked(self, message_id, message, text, *, task_complete, needs_work, scope):
+    def _reply_checked(self, message_id, message, text, *, task_complete, needs_work, scope,
+                       submission_guard=None):
         # Caller holds serial and has just read/verified this owner's message.
         trusted=(isinstance(scope,dict) and scope.get('verified_scope') is True
                      and scope.get('request_ref')==message_id
@@ -302,7 +333,7 @@ class OwnerCoordinator:
         if error:raise ValueError(error)
         args={'message_id':message_id,'text':text}
         if plan['tool']=='reply_weixin_message_phase':args['phase']=plan['phase']
-        return self._submit(identity,payload,plan['tool'],args,scope)
+        return self._submit(identity,payload,plan['tool'],args,scope,submission_guard=submission_guard)
 
     def media(self, item, scope, *, archive_verified, upload_id):
         with self.serial:

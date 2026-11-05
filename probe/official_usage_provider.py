@@ -5,10 +5,15 @@ an already-authorized App Server session. Never construct this from owner text,
 quoted content, arbitrary JSON, a URL, or an agent's claimed tool availability.
 """
 from dataclasses import dataclass
+import asyncio
 import inspect
+import math
+import threading
 import time
 from typing import Callable, Optional
-from .usage_display import UsageBinding, UsageObservation, CreditInfo
+from .usage_display import (UsageBinding, UsageObservation, UsageView, CreditInfo,
+                            normalize_usage, DEFAULT_MAX_AGE_SECONDS)
+from .command_presentation import render_weekly_usage
 from .fixed_commands import prepare_weekly_usage
 
 
@@ -25,10 +30,25 @@ class OfficialCapability:
     credit_mapper: Optional[Callable] = None
 
 
+@dataclass
+class _PendingRead:
+    capability: OfficialCapability
+    binding: UsageBinding
+    request_ref: Optional[str]
+    payload: object
+    started: float
+    finished: Optional[float] = None
+    claimed: bool = False
+
+
 class OfficialUsageProvider:
     def __init__(self, capability=None, clock=time.time):
         self.capability = capability
         self.clock = clock
+        # One unresolved read, scoped to the original capability/account/request.
+        # A sync caller must not discard a Future which may already have run.
+        self._pending = None
+        self._pending_lock = threading.RLock()
 
     @classmethod
     def from_host_tools(cls, tools, binding, evidence_ref, credit_mapper=None, **options):
@@ -61,67 +81,207 @@ class OfficialUsageProvider:
             return prepare_weekly_usage(None, UsageBinding(binding.owner_ref,binding.account_ref,False), now=self.clock())
         return None
 
-    async def prepare_async(self, binding):
-        capability=self.capability
-        rejected = self._preflight_result(capability, binding)
-        if rejected is not None:
-            return rejected
-        started=self.clock()
-        try:
-            payload=capability.read()
-            if inspect.isawaitable(payload):payload=await payload
-            def completed():return payload
-        except Exception as error:
-            def completed(error=error):raise error
-        # Reuse validation/formatting; completed returns the one already-finished
-        # result. It never invokes the host tool a second time.
-        adapter=OfficialUsageProvider(OfficialCapability(capability.source,binding,
-                                      capability.binding_evidence_ref,completed,capability.credit_mapper),self.clock)
-        result=adapter.prepare(binding)
-        result['read_started_at']=started
+    def _metadata(self, result, capability, started, finished=None):
+        result.update(official_source=capability.source, read_started_at=started,
+                      read_finished_at=finished, binding_evidence_ref=capability.binding_evidence_ref)
         return result
 
-    def prepare(self, binding):
+    def _failure(self, status, capability, started, *, attempted=True):
+        return self._metadata({'status': status, 'text': render_weekly_usage(UsageView(status)),
+                               'official_call_attempted': attempted}, capability, started, self.clock())
+
+    def _wait_result(self, capability, started, *, attempted, busy=False):
+        result = self._failure('requires_async', capability, started, attempted=attempted)
+        result.update(adapter_requires_async=True, read_finished_at=None,
+                      official_result_pending=attempted, adapter_busy=busy)
+        return result
+
+    @staticmethod
+    def _same_request(pending, capability, binding, request_ref):
+        return (pending.capability is capability and pending.binding == binding
+                and pending.request_ref == request_ref)
+
+    def _track_pending(self, capability, binding, request_ref, payload, started):
+        pending = _PendingRead(capability, binding, request_ref, payload, started)
+        self._pending = pending
+        if isinstance(payload, asyncio.Future):
+            # Preserve the first observed completion, not a later resume time.
+            if payload.done():
+                pending.finished = self.clock()
+            else:
+                payload.add_done_callback(lambda _: self._mark_finished(pending))
+        return pending
+
+    def _mark_finished(self, pending):
+        with self._pending_lock:
+            if pending.finished is None:
+                pending.finished = self.clock()
+
+    def _format_completed(self, payload, binding, capability, started, finished):
+        if self.capability is not capability:
+            return self._context_changed(capability, started)
+        # Error envelopes remain failures; only the host can classify an actual
+        # permission denial. Never infer authorization from result text.
+        value = payload
+        for _ in range(4):
+            if not isinstance(value, dict):
+                break
+            if value.get('isError') is True or 'error' in value:
+                return self._failure('read_failed', capability, started)
+            if 'structuredContent' in value:
+                value = value['structuredContent']
+            elif 'result' in value:
+                value = value['result']
+            else:
+                break
+        credits = None
+        if callable(capability.credit_mapper):
+            try:
+                mapped = capability.credit_mapper(payload)
+                credits = mapped if isinstance(mapped, CreditInfo) else None
+            except Exception:
+                pass  # unknown credits do not erase valid usage windows
+        observation = UsageObservation(binding.owner_ref, binding.account_ref, finished,
+                                       payload, capability.source, credits)
+        # Mapping may take time. Revalidate age/reset against the actual time
+        # now, while keeping the original read completion on the observation.
+        view = normalize_usage(observation, binding, now=self.clock())
+        if self.capability is not capability:
+            return self._context_changed(capability, started)
+        result = self._metadata({'status': view.status, 'text': render_weekly_usage(view),
+                                 'official_call_attempted': True}, capability, started, finished)
+        weekly_resets = [window.resets_at for window in view.windows
+                         if window.minutes == 10080 and window.resets_at is not None]
+        result['weekly_reset_at'] = min(weekly_resets) if weekly_resets else None
+        return result
+
+    def revalidate_prepared(self, prepared):
+        """Hide expired values at submission; never reread or refresh their age."""
+        if prepared.get('status') not in ('reported', 'no_windows'):
+            return prepared
+        now = self.clock()
+        finished = prepared.get('read_finished_at')
+        reset = prepared.get('weekly_reset_at')
+        try:
+            timestamps_valid = all(type(value) in (int, float) and value > 0 and math.isfinite(value)
+                                   for value in (now, finished))
+        except (ValueError, OverflowError):
+            timestamps_valid = False
+        if not timestamps_valid:
+            return {**prepared, 'status': 'timestamp_invalid',
+                    'text': render_weekly_usage(UsageView('timestamp_invalid'))}
+        if now < finished or now - finished > DEFAULT_MAX_AGE_SECONDS or (reset is not None and now >= reset):
+            return {**prepared, 'status': 'stale', 'text': render_weekly_usage(UsageView('stale'))}
+        return prepared
+
+    def _context_changed(self, capability, started):
+        result = self._failure('source_unverified', capability, started)
+        result['adapter_context_changed'] = True
+        return result
+
+    def _pending_context_gate(self, capability, binding, request_ref):
+        with self._pending_lock:
+            pending = self._pending
+            if pending is not None and not self._same_request(pending, capability, binding, request_ref):
+                return self._wait_result(pending.capability, pending.started, attempted=False, busy=True)
+        return None
+
+    def prepare(self, binding, *, request_ref=None):
         capability = self.capability
+        pending_gate = self._pending_context_gate(capability, binding, request_ref)
+        if pending_gate is not None:
+            return pending_gate
         rejected = self._preflight_result(capability, binding)
         if rejected is not None:
             return rejected
-        started = self.clock()
-        try:
-            payload = capability.read()  # exactly one official invocation, no fallback
-            if inspect.iscoroutine(payload):
-                payload.close()
-                result=prepare_weekly_usage(None,binding,now=self.clock())
-                result['adapter_requires_async']=True
-                return result
-            value = payload
-            for _ in range(4):
-                if not isinstance(value, dict):break
-                if value.get('isError') is True or 'error' in value:
-                    raise RuntimeError('official_read_failed')
-                if 'structuredContent' in value:value=value['structuredContent']
-                elif 'result' in value:value=value['result']
-                else:break
-        except OfficialReadDenied:
-            result = prepare_weekly_usage(None, binding, now=self.clock())
-            result.update(status='permission_denied', official_call_attempted=True)
-            result['text'] = result['text'].replace('官方读取未接通，未调用','官方读取被拒，已停止')
-        except Exception:
-            result = prepare_weekly_usage(None, binding, now=self.clock())
-            result.update(status='read_failed', official_call_attempted=True)
-            result['text'] = result['text'].replace('官方读取未接通，未调用','官方读取失败')
-        else:
+        with self._pending_lock:
+            if self._pending is not None:
+                pending = self._pending
+                busy = not self._same_request(pending, capability, binding, request_ref) or pending.claimed
+                return self._wait_result(capability, pending.started, attempted=not busy, busy=busy)
+            started = self.clock()
+            try:
+                payload = capability.read()  # one invocation, no fallback
+            except OfficialReadDenied:
+                return self._failure('permission_denied', capability, started)
+            except Exception:
+                return self._failure('read_failed', capability, started)
+            if inspect.isawaitable(payload):
+                if inspect.iscoroutine(payload) and inspect.getcoroutinestate(payload) == inspect.CORO_CREATED:
+                    payload.close()  # native coroutine has not started
+                    return self._wait_result(capability, started, attempted=False)
+                self._track_pending(capability, binding, request_ref, payload, started)
+                return self._wait_result(capability, started, attempted=True)
             finished = self.clock()
-            credits = None
-            if callable(capability.credit_mapper):
+        return self._format_completed(payload, binding, capability, started, finished)
+
+    async def prepare_async(self, binding, *, request_ref=None):
+        capability = self.capability
+        pending_gate = self._pending_context_gate(capability, binding, request_ref)
+        if pending_gate is not None:
+            return pending_gate
+        rejected = self._preflight_result(capability, binding)
+        if rejected is not None:
+            return rejected
+        with self._pending_lock:
+            pending = self._pending
+            if pending is not None:
+                if not self._same_request(pending, capability, binding, request_ref) or pending.claimed:
+                    return self._wait_result(capability, pending.started, attempted=False, busy=True)
+                started, payload = pending.started, pending.payload
+            else:
+                started = self.clock()
                 try:
-                    mapped = capability.credit_mapper(payload)
-                    credits = mapped if isinstance(mapped, CreditInfo) else None
+                    payload = capability.read()
+                except OfficialReadDenied:
+                    return self._failure('permission_denied', capability, started)
                 except Exception:
-                    pass  # unknown credits do not erase valid usage windows
-            observation = UsageObservation(binding.owner_ref, binding.account_ref, finished,
-                                           payload, capability.source, credits)
-            result = prepare_weekly_usage(lambda _: observation, binding, now=finished)
-        result.update(official_source=capability.source, read_started_at=started,
-                      read_finished_at=self.clock(), binding_evidence_ref=capability.binding_evidence_ref)
+                    return self._failure('read_failed', capability, started)
+            if inspect.isawaitable(payload):
+                if pending is None:
+                    pending = self._track_pending(capability, binding, request_ref, payload, started)
+                try:
+                    pending.payload = asyncio.ensure_future(payload)
+                    if pending.payload.get_loop() is not asyncio.get_running_loop():
+                        return self._wait_result(capability, started, attempted=True)
+                    if pending.finished is None:
+                        if pending.payload.done():
+                            self._mark_finished(pending)
+                        else:
+                            pending.payload.add_done_callback(lambda _: self._mark_finished(pending))
+                except Exception:
+                    # An incompatible event loop is a host wiring problem, not
+                    # a reason to discard or restart the original read.
+                    return self._wait_result(capability, started, attempted=True)
+                pending.claimed = True
+            else:
+                return self._format_completed(payload, binding, capability, started, self.clock())
+        try:
+            payload = await asyncio.shield(pending.payload)
+        except asyncio.CancelledError:
+            if pending.payload.cancelled():
+                # A cancelled source has no result to resume. It must not keep
+                # all future requests behind an impossible pending read.
+                with self._pending_lock:
+                    if self._pending is pending:
+                        self._pending = None
+                task = asyncio.current_task()
+                if getattr(task, 'cancelling', lambda: 0)():
+                    raise
+                return self._failure('read_failed', capability, started)
+            # Cancellation of this waiter must not cancel an already-started
+            # official read. Only this same request may resume the original.
+            with self._pending_lock:
+                pending.claimed = False
+            raise
+        except OfficialReadDenied:
+            result = self._failure('permission_denied', capability, started)
+        except Exception:
+            result = self._failure('read_failed', capability, started)
+        else:
+            finished = pending.finished if pending.finished is not None else self.clock()
+            result = self._format_completed(payload, binding, capability, started, finished)
+        with self._pending_lock:
+            if self._pending is pending:
+                self._pending = None
         return result
