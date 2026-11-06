@@ -26,6 +26,9 @@ INTERVAL = 600
 FRESHNESS = 1800
 MAX_BODY = 1024 * 1024
 MAX_SEEN = 10000
+# Bound container nesting before parsing, independently of Python's recursion
+# limit. Source snapshots and local ledgers use far fewer than 64 levels.
+MAX_JSON_DEPTH = 64
 TASKS = ()
 ROOT = Path(__file__).resolve().parent
 
@@ -35,6 +38,31 @@ class Invalid(Exception):
 
 
 def strict_json(raw):
+    """Parse bounded nesting without relying on the interpreter recursion limit."""
+    # Preserve json.loads' accepted byte encodings while scanning characters.
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode(json.detect_encoding(raw), 'surrogatepass')
+    if isinstance(raw, str):
+        depth = 0
+        in_string = escaped = False
+        for character in raw:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif character == '\\':
+                    escaped = True
+                elif character == '"':
+                    in_string = False
+            elif character == '"':
+                in_string = True
+            elif character in '[{':
+                depth += 1
+                if depth > MAX_JSON_DEPTH:
+                    raise Invalid('response_too_deep')
+            elif character in ']}':
+                # Syntax and matching delimiters remain the JSON parser's job.
+                depth = max(0, depth - 1)
+
     def pairs(items):
         result = {}
         for key, value in items:
