@@ -57,6 +57,10 @@ credit_info = CreditInfo(balance=verified_balance, mapping_verified=True,
 
 周额度专用`fixed_commands.prepare_weekly_usage`保留约定四行。工具缺失/reader非可调用时status=unavailable、official_call_attempted=false，并写明“未接通，未调用”；账户未核验不调用；reader实际抛错才为read_failed并写明官方读取失败。状态解释置于第一行，不新增第五行。这个attempted字段只记录注入回调是否实际被调用，不能证明回调就是官方工具；官方来源仍需可信协调者的真实回执。
 
+四行展示由 `command_presentation.render_weekly_usage` 统一处理已核实的 `UsageView`；旧准备函数仍可调用。provider 的同步与异步入口共用结果校验，不再把异步结果包装成第二个provider调用。读取完成后，余额映射与格式化前经过的时间仍计入300秒有效期；`read_finished_at` 保留实际读取完成时刻，不取映射结束时刻。
+
+同步读取返回Future/Task/其他awaitable时，不发送未经等待的未知结果；必须由同一请求的async入口消费原对象。可能已经启动的读取明确标记 `official_result_pending`，不声称“未调用”，不更换请求或reader重试。未完成读取的隔离、取消与内存生命周期见[协调者接线](COORDINATOR-WIRING.md)。
+
 - 默认仅选择公开额度桶标识 `codex`；调用方可显式选择另一安全标识。不同桶不求和、不互相借用credits；map存在但为空、缺目标桶或非null损坏时，不静默退回legacy。map缺失/null时可使用legacy，记录来源差异。
 - 300分钟才称5小时，10080分钟才称周窗口；其他正整数时长如实命名，时长缺失标未知；重复时长保留primary/secondary区分，不合并。
 - 有效数值按 `remaining=clamp(100-usedPercent,0,100)` 展示；超100%的已用值保留并标明接口异常范围，负数、bool、NaN、Infinity、非数字等保持未知。缺失窗口不等于已用0或剩余100。
@@ -71,4 +75,4 @@ credit_info = CreditInfo(balance=verified_balance, mapping_verified=True,
 
 端到端尚未接通，未在真实查询/微信发送中验收：需要原协调任务的受支持执行环境实际提供该使用者自己的官方只读工具、可信账户映射和原生受审批工具适配器，再将事件处理接到入口。若该环境无法运行本Python模块，仍需受支持的调用方式；不能声称远程MCP安装后会自动调用本地函数。新 Work 的工具或一次真实读取不能证明旧云端协调任务拥有同样能力。
 
-本次不新增server工具，不更改schema、触发器、菜单、ACK、订阅、幂等发送器、权限或服务。菜单、长图与额度按本次明确授权成组维护；不因此获得发布、新凭据或更大访问范围。
+命令重构不新增server工具，不更改schema、触发器、ACK、订阅、幂等发送器、权限或服务。菜单沿用既有文字并统一已授权的命令规范化；长图与额度按本次明确授权成组维护，不因此获得发布、新凭据或更大访问范围。

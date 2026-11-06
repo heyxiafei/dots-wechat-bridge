@@ -22,12 +22,41 @@ VERSION = '2026-07-28'
 SERVER_NAME = 'dots-wechat-bridge'
 SERVER_VERSION = '0.5.0+r7-connection-check'
 MAX_FRAME_BYTES = 65536
+MAX_JSON_DEPTH = 64
 MAX_REQUESTS = 256
 MAX_DURATION_SECONDS = 180
 
 
 def canonical(value):
     return json.dumps(value, ensure_ascii=True, separators=(',', ':'), allow_nan=False)
+
+
+def parse_frame(raw):
+    """Bound container depth before JSON allocation, independently of Python.
+
+    Bytes retain json.loads' encoding detection. Only brackets outside strings
+    count; the standard decoder still validates syntax and matching delimiters.
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode(json.detect_encoding(raw), 'surrogatepass')
+    depth, quoted, escaped = 0, False, False
+    for char in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in '[{':
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                raise ValueError('json_depth_limit')
+        elif char in ']}':
+            depth = max(0, depth - 1)
+    return json.loads(raw)
 
 
 def plan(observe_subscriptions=False):
@@ -287,7 +316,7 @@ def serve(duration_seconds=60, stdin_fd=0, stdout=None, stderr=None, observe_sub
                     reason = 'request_limit'
                     return reason
                 try:
-                    request = json.loads(line)
+                    request = parse_frame(line)
                 except (ValueError, UnicodeError, RecursionError):
                     response = error(None, -32700)
                 else:

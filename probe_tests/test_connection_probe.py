@@ -203,6 +203,54 @@ class ConnectionProbeTests(unittest.TestCase):
         result = self.cli(['--stdio', '--duration-seconds', '0'])
         self.assertNotEqual(result.returncode, 0)
 
+    def test_json_depth_limit_is_checked_before_the_standard_decoder(self):
+        for opening, closing in (('[', ']'), ('{"nested":', '}')):
+            raw = opening * (check.MAX_JSON_DEPTH + 1) + '0' + closing * (check.MAX_JSON_DEPTH + 1)
+            with self.subTest(opening=opening), patch.object(check.json, 'loads') as decoder:
+                with self.assertRaisesRegex(ValueError, '^json_depth_limit$'):
+                    check.parse_frame(raw)
+                decoder.assert_not_called()
+
+    def test_json_depth_limit_accepts_boundary_and_ignores_string_brackets(self):
+        raw = '[' * check.MAX_JSON_DEPTH + '0' + ']' * check.MAX_JSON_DEPTH
+        value = check.parse_frame(raw)
+        for _ in range(check.MAX_JSON_DEPTH):
+            self.assertEqual(len(value), 1)
+            value = value[0]
+        self.assertEqual(value, 0)
+        quoted = {'text': '[' * 1000 + '}\\"' * 20 + 'escaped\\\\end'}
+        self.assertEqual(check.parse_frame(json.dumps(quoted)), quoted)
+        mixed = '{"nested":[' * (check.MAX_JSON_DEPTH // 2) + '0' + ']}' * (check.MAX_JSON_DEPTH // 2)
+        self.assertIsInstance(check.parse_frame(mixed), dict)
+        with self.assertRaisesRegex(ValueError, '^json_depth_limit$'):
+            check.parse_frame('[' + mixed + ']')
+
+    def test_json_depth_guard_preserves_supported_byte_encodings(self):
+        value = {'text': 'synthetic \\" [nested]'}
+        raw = json.dumps(value)
+        deep = '[' * (check.MAX_JSON_DEPTH + 1) + '0' + ']' * (check.MAX_JSON_DEPTH + 1)
+        for encoding in ('utf-8', 'utf-16', 'utf-16-le', 'utf-16-be', 'utf-32', 'utf-32-le', 'utf-32-be'):
+            with self.subTest(encoding=encoding):
+                self.assertEqual(check.parse_frame(raw.encode(encoding)), value)
+                with self.assertRaisesRegex(ValueError, '^json_depth_limit$'):
+                    check.parse_frame(bytearray(deep.encode(encoding)))
+
+    def test_excessive_json_metadata_is_redacted_and_next_frame_still_works(self):
+        # Outer request + params + _meta consume three container levels.
+        def body(depth):
+            return ('{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{"nested":' +
+                    '[' * depth + '"private-depth-fixture"' + ']' * depth + '}}}')
+        bounded = body(check.MAX_JSON_DEPTH - 3)
+        excessive = body(check.MAX_JSON_DEPTH - 2)
+        result = self.cli(['--stdio'], bounded + '\n' + excessive + '\n' + lines(request('ping', request_id=2)))
+        self.assertEqual(result.returncode, 0)
+        responses = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(responses[0]['result'], {})
+        self.assertEqual(responses[1]['error']['code'], -32700)
+        self.assertIsNone(responses[1]['id'])
+        self.assertEqual(responses[2], {'jsonrpc': '2.0', 'id': 2, 'result': {}})
+        self.assertNotIn('private-depth-fixture', result.stdout + result.stderr)
+
     def test_request_limit_exits_without_responding_beyond_bound(self):
         result = self.cli(['--stdio'], lines(*[request('ping', request_id=n) for n in range(257)]))
         self.assertNotEqual(result.returncode, 0)

@@ -123,7 +123,46 @@ R7_ADDITION_PATHS = (
     "probe_tests/test_submission_preflight.py", "probe_tests/test_usage_display.py",
     "probe_tests/test_workflow_contract.py", "scripts/install-project.py",
 )
-SOURCE_PATHS += MERGED_MAIN_PATHS + R7_ADDITION_PATHS
+REFACTOR_PATHS = (
+    "probe/weixin_protocol.py", "probe/weixin_inbound.py", "probe/weixin_dispatch.py",
+    "probe/command_catalog.py", "probe/command_context.py", "probe/command_presentation.py",
+    "probe/rpc_protocol.py", "probe/rpc_schema.py", "probe/rpc_dispatch.py",
+    "probe/rpc_diagnostics.py", "probe/callback_transport.py", "probe/service_runtime.py",
+    "probe_tests/test_weixin_component_boundaries.py", "probe_tests/test_rpc_boundaries.py",
+    "probe_tests/test_command_architecture.py", "probe_tests/test_verify_release.py",
+    "probe/app_server_usage_rpc.py", "probe_tests/test_app_server_usage_rpc.py", "docs/APP-SERVER-USAGE.md",
+    "scripts/verify-release.py", ".github/workflows/ci.yml", "CONTRIBUTING.md", "CHANGELOG.md",
+    "docs/ARCHITECTURE.md", "docs/USER-GUIDE.md", "docs/MIGRATION.md",
+    "docs/AIHOT-PROVENANCE.md", "licenses/AIHOT-MIT.txt",
+)
+AIHOT_INTEGRATION_PATHS = (
+    "integrations/__init__.py", "integrations/aihot/__init__.py", "integrations/aihot/monitor.py",
+    "integrations/aihot/notice_relay/__init__.py", "integrations/aihot/notice_relay/relay.py",
+    "integrations/aihot/notice_relay/store_helpers.py", "integrations/aihot/notice_relay/text_b.py",
+    "integrations/aihot/notice_relay/source_adapter.py", "integrations/aihot/tests/__init__.py",
+    "integrations/aihot/tests/fixtures.py", "integrations/aihot/tests/test_banked_recovery.py",
+    "integrations/aihot/tests/test_cache_recovery.py", "integrations/aihot/tests/test_dual_producer.py",
+    "integrations/aihot/tests/test_monitor.py", "integrations/aihot/tests/test_notifications.py",
+    "integrations/aihot/tests/test_relay_recovery.py", "integrations/aihot/tests/test_shared_format.py",
+    "integrations/aihot/tests/test_source_observability.py", "integrations/aihot/tests/test_text_b_contract.py",
+    "probe_tests/test_aihot_producer.py", "probe_tests/test_aihot_producer_config.py",
+    "probe_tests/test_aihot_producer_storage.py",
+    "config/aihot-control.json.example", "config/aihot-dual-control.json.example",
+    "docs/AIHOT-INTEGRATION.md",
+)
+FOUNDATION_PATHS = (
+    "foundation/__init__.py", "foundation/__main__.py", "foundation/contracts.py",
+    "foundation/channel.py", "foundation/config.py", "foundation/core.py", "foundation/store.py",
+    "foundation/routing.py", "foundation/echo.py", "foundation/providers.py",
+    "foundation/host_backends.py", "foundation/weixin_protocol.py",
+    "foundation_tests/__init__.py", "foundation_tests/test_channel.py", "foundation_tests/test_cli.py",
+    "foundation_tests/test_foundation_core.py", "foundation_tests/test_foundation_providers.py",
+    "foundation_tests/test_host_backends.py", "foundation_tests/test_cowagent_protocol.py",
+    "docs/FOUNDATION.md", "docs/FOUNDATION-USER-GUIDE.md", "docs/PROVIDERS.md",
+    "docs/HOST-BACKENDS.md", "docs/COWAGENT-PROVENANCE.md", "licenses/CowAgent-MIT.txt",
+    "upstream/CowAgent/manifest.json", "config/foundation.json.example",
+)
+SOURCE_PATHS += MERGED_MAIN_PATHS + R7_ADDITION_PATHS + REFACTOR_PATHS + AIHOT_INTEGRATION_PATHS + FOUNDATION_PATHS
 OPTIONAL_PATHS = ()  # Compatibility name; all reviewed sources are required in r7.
 BASELINE_NAMES = ("dotledger.py", "login.py", "media.py", "outbound.py", "probe.py", "receipts.py", "weixin.py")
 BASELINE_PREFIX = "probe_tests/fixtures/rollback_baseline/"
@@ -132,6 +171,9 @@ BASELINE_PATHS = tuple(BASELINE_PREFIX + "probe/" + name for name in BASELINE_NA
 )
 GENERATED_PATHS = ("PUBLIC-BUNDLE-MANIFEST.json",)
 PUBLIC_PATHS = frozenset(SOURCE_PATHS + OPTIONAL_PATHS + BASELINE_PATHS + GENERATED_PATHS)
+# Exact reviewed files only; this does not allow arbitrary hidden source paths.
+PUBLIC_HIDDEN_PATHS = frozenset({".gitignore", ".github/workflows/ci.yml"})
+PUBLIC_HIDDEN_DIRECTORIES = frozenset({".github"})
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_BYTES = 24 * 1024 * 1024
 
@@ -235,7 +277,7 @@ def path_findings(relative, allowed_paths=PUBLIC_PATHS):
     result = []
     if any(part in PRIVATE_COMPONENTS for part in p.parts) or PRIVATE_NAMES.fullmatch(p.name):
         result.append(finding(relative, 0, "private_path"))
-    if any(part.startswith(".") for part in p.parts) and relative != ".gitignore":
+    if any(part.startswith(".") for part in p.parts) and relative not in PUBLIC_HIDDEN_PATHS:
         result.append(finding(relative, 0, "hidden_path"))
     if relative not in allowed_paths:
         result.append(finding(relative, 0, "not_allowlisted"))
@@ -260,7 +302,7 @@ def scan_tree(root, allowed_paths=PUBLIC_PATHS):
                 if p.is_symlink():
                     result.append(finding(relative, 0, "symlink"))
                     directories.remove(name)
-                elif name in PRIVATE_COMPONENTS or name.startswith("."):
+                elif name in PRIVATE_COMPONENTS or (name.startswith(".") and relative not in PUBLIC_HIDDEN_DIRECTORIES):
                     result.append(finding(relative, 0, "private_directory"))
                     directories.remove(name)
                 elif not any(item.startswith(relative + "/") for item in allowed_paths):

@@ -18,6 +18,20 @@
 
 配置例子在 `config/owner-coordinator.json.example`，默认dry_run、无任务ID、固定ACK关闭、旧dot镜像关闭。JSON不能授予权限或凭据。
 
+## 异步额度读取的截止与迟到结果
+
+`OfficialUsageProvider(..., read_timeout_seconds=20)` 默认最多等待官方异步结果20秒；可信宿主构造参数可设为大于0、最多60秒的有限数，不接受布尔、字符串、NaN或Infinity。此参数不是微信输入、配置授权或平台执行时限。期限以首次调用前的单调时钟起算，同一请求取消后恢复、同步Future转异步等待均不续期。`prepare_async` 使用有界等待，不取消源任务，也不等待源任务响应取消；因此抵抗取消的异步读取不能延长这段等待。
+
+到期返回 `read_timeout` 和既有四行格式，明确“官方读取超时，结果未知；未重试”。`read_finished_at=null` 不冒称官方操作已结束；`read_elapsed_seconds` 是本地单调耗时，`read_timed_out_at` 是截止判定的墙钟，`read_timeout_seconds` 是预算。`official_call_attempted` 仅表示进入了宿主callback，不能据此声称额度RPC已写出或返回。协调结果的 `usage_diagnostic` 仅投影固定阶段字段和耗时，不包含账户、原始结果或异常内容。
+
+原读取尚未解决时保留同一provider的隔离状态。原请求保留超时终态；新的请求仅在当前capability与已核账户绑定均一致时准备“上次官方读取尚未结束，本次未调用”，由原协调者复核本人消息、scope、当前permit并使用该新消息自己的幂等final槽。更换或未核账户、未核能力不获得该发送路径。超时前原有busy/async接线等待行为保持，宿主仍须有界处理这些待接线状态。
+
+迟到成功、错误或取消只针对原Future排空，释放隔离，不格式化真实数字、不重读、不触发第二final。迟到 `OfficialReadDenied` 另保留原capability的拒绝锁；原消息已有final则只对账原提交，不能追加拒绝通知。后续新请求不调用该capability，并沿现有拒绝停止机制记录 `official_call_attempted=false`。不切provider绕过拒绝。
+
+本provider最多保留256条精确capability对象、binding、request_ref的超时终态；保留对象引用防止对象ID复用，不保存迟到payload。达到上限后拒绝新增读取，不淘汰旧请求使其可再读。迟到拒绝及终态隔离属于当前provider生命周期；跨进程、重启恢复和原final已存在时的拒绝事实归档仍由原可信宿主日志负责，不能靠重建provider或清空日志解除。原协调者发送claim/unknown/denied/submitted账本继续保留。
+
+该截止只能约束可调度事件循环上的异步等待。阻塞同步callback、映射函数、阻塞事件循环、宿主模型/任务调度、MCP传输及final发送须由各自宿主提供有限边界；不启动线程来假称可以终止任意同步函数。即使同步callback在截止后才返回，适配器也只能事后丢弃其结果，无法抢占它。此候选模块不会自动接入已有线上模型委派；离线deadline测试不证明线上初始化故障、调度延迟、工具注入或手机收件已经修复。
+
 ## 已接入的行为
 
 固定命令由可信宿主调用：
@@ -34,9 +48,17 @@ result = coordinator.handle_fixed_command(
 
 `trusted_scope` 必须有 literal `verified_scope=True`、匹配 `request_ref=message_id` 和 `evidence_origin=direct_owner_message` 或 `trusted_parent_transcript`；额外的 `owner_intent_verified` 必须是 literal True。额度读取还要求 `scope.owner_ref/account_ref` 与 `UsageBinding` 相符、provider 有可信绑定证据。`read_weixin_message` 不暴露账户映射，`accountId:null` 也不能补出映射；这些核实义务属于实际宿主。
 
-入口重读原 owner 消息并重新分类，拒绝引用、混合附件、不完整捕获和其他命令，不用 `fixed_command` hint 自授权。完整的独立“额度／查额度／查一下额度”与既有周额度别名只指向 Codex 周额度，不追问类型；`/help` 复用现有菜单。缺 reader/账户证明仍生成明确“未知、未调用”的四行结果，经原 final/permit 路径处理。实际官方读取拒绝则停止并返回四行错误文本给宿主，不由 handler 发送；拒绝记录即使在 dry_run 下也持久保存，因为 dry_run 仍可能实际执行获准的只读额度调用。dry_run 不发送微信，不生成发送 claim；它不是免授权的离线模式。
+入口重读原 owner 消息并重新分类，拒绝引用、混合附件、不完整捕获和其他命令，不用 `fixed_command` hint 自授权。完整的独立“额度／查额度／查一下额度”与既有周额度别名只指向 Codex 周额度，不追问类型；`/help` 复用现有菜单。缺 reader/账户证明仍生成明确“未知、未调用”的四行结果，经原 final/permit 路径处理。正常等待路径得到实际官方读取拒绝则停止并返回四行错误文本给宿主，不由 handler 发送；该路径的拒绝记录即使在 dry_run 下也持久保存，因为 dry_run 仍可能实际执行获准的只读额度调用。超时后的迟到拒绝按上文隔离，不能宣称已自动归档原消息。dry_run 不发送微信，不生成发送 claim；它不是免授权的离线模式。
 
 读取前同时核查远端 ack/final 和本地 ack/final 的 claimed/unknown/denied/submitted；已有记录优先协调原 ID，不读新额度造成内容冲突。sync/async 同消息共用 single-flight 标记，不持线程锁跨 await；取消只释放读阶段标记，不清除已存在的持久提交。读取后重新核验消息、scope、原记录，再经原 permit 提交；并发普通回复已占槽则查询原提交，不另发额度。同步入口遇 async reader 返回 `requires_async_usage_reader`，不提交虚假结果。
+
+同步入口识别全部 awaitable，包括 Future、Task 和自定义 awaitable，不能把未等待的结果格式化成未知额度并占用 final。未启动的原生 coroutine 会关闭，并明确尚未执行；可能已经启动的其他 awaitable 标为 `official_call_attempted=True`、`official_result_pending=True`，保留原对象等待 async 入口。该标记表示调用已经尝试，不证明官方结果成功或本人已收到。
+
+provider 在内存中最多保留一份未完成读取，只允许同一 capability 对象、已核绑定和原 `request_ref` 接手；handler 自动传原 message_id。超时前其他消息或已有等待者返回 `usage_reader_busy`，不再次调用 reader，不消费原结果。取消等待者保留原读取，下一次同请求可在原截止内继续等待；不会主动取消原官方任务。正常已完成结果不缓存，正常等待路径得到的权限拒绝由原 handler 持久保存；超时终态与迟到拒绝按上文处理。读准入、终态、容量和拒绝门槛在同一锁内核验，避免跨线程交错跳过新建立的隔离。内存交接不是跨进程恢复机制，不能宣称进程退出后仍能恢复未完成的官方调用；生产宿主应直接使用与 reader 匹配的 async 入口。
+
+同步与异步路径共享结果校验和展示函数；额度读取完成时间与当前校验时间分开。余额映射耗时或恢复等待不能刷新旧结果的年龄，超过300秒或已越过reset的用量继续显示未知。该修复不创建官方reader或账户授权，真实宿主接线仍须独立验收。
+
+最终提交前，在第二次owner读取与当前permit完成之后、发送claim之前，再按原 `read_finished_at` 和周窗口reset校验一次。跨过有效期时改为明确未知并保存实际提交文字的digest，不重读官方数据、不改读取时间；provider/capability在过程中撤销或替换则停止等待重新核验。已有原动作仍先返回原状态，不借新校验覆盖旧承诺。该边界只能保证本地提交时的校验，不能把外部工具排队或手机到达时间承诺为零。
 
 `reply()` 先调用现有 `read_weixin_message` 核owner来源及当前ack/final，再分派原幂等回复工具；短问直接final，长任务ack→final，已有final查原send_id。没有notification回退。
 

@@ -224,12 +224,12 @@ def collect(source, baseline):
         "purpose": "public source bundle; no deployment or end-to-end success claim",
         "release_basis": {
             "public_repository": "heyxiafei/dots-wechat-bridge",
-            "public_main_commit": "48709d9fc72e9bdf4037c0ae907a75a376fd6ff5",
-            "candidate": "r7 offline candidate plus reviewed public integration changes",
-            "scope": "Explicit union of reviewed public main and r7 source paths, plus public operator configuration and tests",
+            "public_main_commit": "056cce66dadd83521c279ee309ef204e290ded6b",
+            "candidate": "0.6.0+refactor1; isolated refactor of r7-command-closed plus AIHot integration",
+            "scope": "Fixed reviewed sources, synthetic tests, general operator documentation and licenses; no production state",
         },
         "source_policy": "fixed allowlist; no Git history, runtime, state, credentials, binaries or network",
-        "fixture_policy": "whole-file reviewed SHA256 and counts required for legacy replacement; clean public fixtures unchanged; core unchanged",
+        "fixture_policy": "whole-file reviewed SHA256 and counts required for legacy replacement; frozen historical fixtures unchanged",
         "normalizations": normalizations,
         "files": [{"path": key, "bytes": len(value), "sha256": hashlib.sha256(value).hexdigest()}
                   for key, value in sorted(payloads.items())],

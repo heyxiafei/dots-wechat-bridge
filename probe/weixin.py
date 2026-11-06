@@ -1,334 +1,38 @@
-"""Owner-only Tencent iLink text transport; no model or ChatGPT history access.
+"""Owner-only WeixinStore facade: durable commitments and read projections.
 
-Protocol reference: https://github.com/Tencent/openclaw-weixin/blob/main/docs/protocol.md
-Credentials stay in the private server database. Exceptions contain fixed categories only.
+InboundCapture owns atomic input capture, OutboundDispatcher owns the existing
+single sender's state machine, and IlinkClient owns the bounded HTTP protocol.
+The facade preserves the historical API, database schema and stable identities.
 """
-import base64
-from contextlib import nullcontext
 import hashlib
-import http.client
-import ipaddress
 import json
-import re
 import secrets
-import socket
-import ssl
-import time
-from urllib.parse import urlencode, urlsplit
 try:
-    from .quotes import capture_quotes, server_message_id, quote_shape
-    from .fixed_commands import capture_command_context, classify as classify_fixed_command
+    from .weixin_protocol import (BASE_URL, CHANNEL_VERSION, MESSAGE_EVENT,
+                                 WeixinError, IlinkClient, encoded, api_base,
+                                 public_ip, parse_api_json)
+    from .weixin_inbound import (InboundCapture, describe_inbound, inbound_part_id,
+                                inbound_type_metadata, media_ingest_items,
+                                MAX_INBOUND_TEXT_BYTES, MAX_INBOUND_ATTACHMENTS,
+                                MAX_INBOUND_MANIFEST_ITEMS, INBOUND_COMPLETENESS_VERSION)
+    from .weixin_dispatch import OutboundDispatcher
+    from .quotes import server_message_id
+    from .fixed_commands import classify as classify_fixed_command
+    from .command_catalog import is_help_request
+    from .command_presentation import render_help_menu
 except ImportError:
-    from quotes import capture_quotes, server_message_id, quote_shape
-    from fixed_commands import capture_command_context, classify as classify_fixed_command
-
-BASE_URL = "https://ilinkai.weixin.qq.com"
-CHANNEL_VERSION = "2.4.9"
-MESSAGE_EVENT = "weixin.message"
-MAX_INBOUND_TEXT_BYTES = 65536
-MAX_INBOUND_ATTACHMENTS = 8
-MAX_INBOUND_MANIFEST_ITEMS = 64
-INBOUND_COMPLETENESS_VERSION = "inbound-completeness-v1"
-
-
-def inbound_part_id(message_id, item_index):
-    return "wip_" + hashlib.sha256(encoded([message_id, item_index]).encode()).hexdigest()[:32]
-
-
-def inbound_type_metadata(value):
-    """Retain a bounded protocol type identifier, never an arbitrary payload."""
-    if type(value) is int:
-        if -(2 ** 63) <= value < 2 ** 63:
-            return {"item_type": value, "item_type_kind": "integer"}
-        return {"item_type_kind": "integer", "item_type_out_of_range": True}
-    if isinstance(value, str):
-        if len(value) <= 64 and re.fullmatch(r'[A-Za-z0-9_.:-]+', value):
-            return {"item_type": value, "item_type_kind": "string"}
-        return {"item_type_kind": "string", "item_type_omitted": True}
-    kind = ("null" if value is None else "boolean" if type(value) is bool else
-            "number" if type(value) is float else "array" if isinstance(value, list) else
-            "object" if isinstance(value, dict) else "invalid")
-    return {"item_type_kind": kind}
-
-
-def media_ingest_items(raw_items):
-    """Keep original indices while excluding invalid protocol types/transcripts.
-
-    MediaStore is also used independently and historically accepts equal-valued
-    float item types. Here the recorded strict source inventory is authoritative.
-    Never pass invalid or unbounded voice text into its provenance encoder.
-    """
-    for item in raw_items if isinstance(raw_items, list) else []:
-        if not isinstance(item, dict) or type(item.get('type')) is not int:
-            yield {}
-            continue
-        if item['type'] == 3 and isinstance(item.get('voice_item'), dict):
-            voice = item['voice_item']
-            transcript = voice.get('text')
-            valid = isinstance(transcript, str) and len(transcript) <= MAX_INBOUND_TEXT_BYTES
-            if valid:
-                try:
-                    valid = len(transcript.encode('utf-8')) <= MAX_INBOUND_TEXT_BYTES
-                except UnicodeError:
-                    valid = False
-            if not valid and transcript is not None:
-                item = {**item, 'voice_item': {**voice, 'text': ''}}
-        yield item
-
-
-def describe_inbound(message_id, raw_items):
-    """Capture a bounded text prefix and sanitized source-item inventory.
-
-    No raw item objects, media locators, credentials or text bodies enter the
-    inventory. The existing 64KiB text and eight-attachment limits stay intact.
-    The first 64 item identities plus one range placeholder bound metadata even
-    for a response containing very many small or malformed items.
-    """
-    items = raw_items if isinstance(raw_items, list) else []
-    issues, parts, text_chunks = set(), [], []
-    text_bytes, text_source_bytes, text_count, attachment_count = 0, 0, 0, 0
-    text_closed, text_truncated = False, False
-
-    def append_text(value):
-        nonlocal text_bytes, text_source_bytes, text_count, text_closed, text_truncated
-        source_bytes, stored_bytes, part_issues = 0, 0, []
-        if text_count:
-            if text_source_bytes is not None:
-                text_source_bytes += 1
-            if not text_closed and text_bytes < MAX_INBOUND_TEXT_BYTES:
-                text_chunks.append("\n")
-                text_bytes += 1
-            else:
-                text_closed = text_truncated = True
-                part_issues.append("text_too_large")
-        text_count += 1
-        # Encode small slices, never a second unbounded joined/encoded payload.
-        for start in range(0, len(value), 4096):
-            try:
-                chunk = value[start:start + 4096].encode("utf-8")
-            except UnicodeError:
-                source_bytes = text_source_bytes = None
-                text_closed = text_truncated = True
-                part_issues.append("invalid_text_encoding")
-                break
-            source_bytes += len(chunk)
-            if text_source_bytes is not None:
-                text_source_bytes += len(chunk)
-            if text_closed:
-                continue
-            available = MAX_INBOUND_TEXT_BYTES - text_bytes
-            prefix = chunk[:available].decode("utf-8", errors="ignore")
-            kept = len(prefix.encode("utf-8"))
-            if prefix:
-                text_chunks.append(prefix)
-                stored_bytes += kept
-                text_bytes += kept
-            if len(chunk) > available:
-                # Never fill unused bytes with later items after a split UTF-8
-                # character: the retained text must remain a source prefix.
-                text_closed = text_truncated = True
-        if source_bytes is not None and stored_bytes < source_bytes:
-            if "text_too_large" not in part_issues:
-                part_issues.append("text_too_large")
-            text_truncated = True
-        issues.update(part_issues)
-        return {"text_source_bytes": source_bytes, "text_stored_bytes": stored_bytes}, part_issues
-
-    if not isinstance(raw_items, list) or not items:
-        reason = "invalid_item_list" if not isinstance(raw_items, list) else "empty_item_list"
-        issues.add(reason)
-        parts.append({"part_id": inbound_part_id(message_id, -1), "item_index": -1,
-                      "kind": "malformed", "state": "invalid", "issue_codes": [reason]})
-    for index, item in enumerate(items):
-        part = {"part_id": inbound_part_id(message_id, index), "item_index": index,
-                "kind": "malformed", "state": "invalid", "issue_codes": []}
-        item_type = item.get("type") if isinstance(item, dict) else None
-        part.update(inbound_type_metadata(item_type))
-        if not isinstance(item, dict):
-            part["issue_codes"].append("invalid_item")
-        elif type(item_type) is not int:
-            part["issue_codes"].append("invalid_item_type")
-        elif item_type == 1:
-            part["kind"] = "text"
-            data = item.get("text_item")
-            value = data.get("text") if isinstance(data, dict) else None
-            if not isinstance(value, str):
-                part["issue_codes"].append("invalid_text_item")
-            else:
-                fields, text_issues = append_text(value)
-                part.update(fields, state="truncated" if text_issues else "captured")
-                part["issue_codes"].extend(text_issues)
-        elif item_type in (2, 3, 4, 5):
-            attachment_count += 1
-            kind = {2: "image", 3: "voice", 4: "file", 5: "video"}[item_type]
-            part.update(kind=kind, state="captured")
-            data = item.get(kind + "_item")
-            if attachment_count > MAX_INBOUND_ATTACHMENTS:
-                part.update(state="omitted")
-                part["issue_codes"].append("attachment_limit_exceeded")
-            else:
-                # Identical to MediaStore.add's original-item-index identity,
-                # including malformed media that becomes an explicit error row.
-                part["attachment_id"] = "att_" + hashlib.sha256(encoded([message_id, index]).encode()).hexdigest()[:32]
-            if not isinstance(data, dict):
-                if part["state"] != "omitted":
-                    part["state"] = "invalid"
-                part["issue_codes"].append("invalid_media_item")
-            elif kind == "voice":
-                transcript = data.get("text")
-                if isinstance(transcript, str) and transcript:
-                    fields, text_issues = append_text(transcript)
-                    part.update(fields)
-                    if text_issues and part["state"] != "omitted":
-                        part["state"] = "truncated"
-                    part["issue_codes"].extend(text_issues)
-                elif transcript is not None and not isinstance(transcript, str):
-                    part["issue_codes"].append("invalid_voice_transcript")
-                    if part["state"] != "omitted":
-                        part["state"] = "invalid"
-        else:
-            part.update(kind="unknown", state="unsupported")
-            part["issue_codes"].append("unsupported_item_type")
-        issues.update(part["issue_codes"])
-        if index < MAX_INBOUND_MANIFEST_ITEMS:
-            parts.append(part)
-    omitted = max(0, len(items) - MAX_INBOUND_MANIFEST_ITEMS)
-    if omitted:
-        issues.add("item_manifest_limit_exceeded")
-        parts.append({"part_id": inbound_part_id(message_id, "overflow_64"),
-                      "item_index": None, "item_index_start": MAX_INBOUND_MANIFEST_ITEMS,
-                      "item_index_end": len(items) - 1, "item_count": omitted,
-                      "kind": "overflow", "state": "omitted",
-                      "issue_codes": ["item_manifest_limit_exceeded"]})
-    if text_truncated:
-        issues.add("text_incomplete")
-    manifest = {"version": INBOUND_COMPLETENESS_VERSION, "recorded": True,
-                "scope": "bounded_inbound_capture_not_dot_visibility",
-                "complete": not issues, "source_item_count": len(items) if isinstance(raw_items, list) else None,
-                "text_source_bytes": text_source_bytes, "text_stored_bytes": text_bytes,
-                "text_truncated": text_truncated, "text_limit_bytes": MAX_INBOUND_TEXT_BYTES,
-                "attachment_source_count": attachment_count, "attachment_limit": MAX_INBOUND_ATTACHMENTS,
-                "item_manifest_limit": MAX_INBOUND_MANIFEST_ITEMS, "items_omitted_count": omitted,
-                "issue_codes": sorted(issues), "parts": parts}
-    return "".join(text_chunks), bool(attachment_count), manifest
-
-
-class WeixinError(Exception):
-    def __init__(self, kind, code=None):
-        super().__init__(kind)
-        self.kind, self.code = kind, code
-
-
-def encoded(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def api_base(value):
-    try:
-        p = urlsplit(value)
-        host = p.hostname
-        if (p.scheme != "https" or not host or not (host == "weixin.qq.com" or host.endswith(".weixin.qq.com"))
-                or p.port not in (None, 443) or p.username or p.password or p.query or p.fragment
-                or p.path not in ("", "/")):
-            raise ValueError()
-        return "https://" + host
-    except (TypeError, ValueError):
-        raise WeixinError("invalid_api_destination") from None
-
-
-def public_ip(value):
-    ip = ipaddress.ip_address(value)
-    return (ip.is_global and not ip.is_multicast and not ip.is_reserved
-            and not (ip.version == 6 and (ip.ipv4_mapped or ip.sixtofour or ip.teredo)))
-
-
-def parse_api_json(raw):
-    try:
-        result = json.loads(raw)
-    except (ValueError, UnicodeError):
-        raise WeixinError("invalid_api_json") from None
-    if not isinstance(result, dict):
-        raise WeixinError("invalid_api_response")
-    return result
-
-
-class IlinkClient:
-    def __init__(self, clock=time.time):
-        self.clock = clock
-
-    def request(self, base, endpoint, payload=None, token=None, timeout=20):
-        host = urlsplit(api_base(base)).hostname
-        if not endpoint.startswith("/ilink/bot/") or "\r" in endpoint or "\n" in endpoint:
-            raise WeixinError("invalid_api_endpoint")
-        headers = {"iLink-App-Id": "bot", "iLink-App-ClientVersion": str((2 << 16) | (4 << 8) | 9)}
-        body = None
-        if payload is not None:
-            headers.update({"Content-Type": "application/json", "AuthorizationType": "ilink_bot_token",
-                            "X-WECHAT-UIN": base64.b64encode(str(secrets.randbits(32)).encode()).decode()})
-            if token:
-                headers["Authorization"] = "Bearer " + token
-                payload = {**payload, "base_info": {"channel_version": CHANNEL_VERSION, "bot_agent": "DotsWechatBridge/0.2"}}
-            body = encoded(payload).encode()
-        try:
-            addresses = list(dict.fromkeys(x[4][0] for x in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)))
-            if not addresses or not all(public_ip(x) for x in addresses):
-                raise WeixinError("non_public_api_address")
-            conn = http.client.HTTPSConnection(host, timeout=timeout, context=ssl.create_default_context())
-            sock = socket.create_connection((addresses[0], 443), timeout=timeout)
-            try:
-                conn.sock = conn._context.wrap_socket(sock, server_hostname=host)
-            except BaseException:
-                sock.close()
-                raise
-            try:
-                conn.request("POST" if payload is not None else "GET", endpoint, body, headers)
-                response = conn.getresponse()
-                raw = response.read(1048577)
-                if len(raw) > 1048576:
-                    raise WeixinError("api_response_too_large")
-                if not 200 <= response.status < 300:
-                    # No automatic redirects and no logging response bodies or URLs.
-                    raise WeixinError("api_http_error", response.status)
-                return parse_api_json(raw)
-            finally:
-                conn.close()
-        except WeixinError:
-            raise
-        except (socket.timeout, TimeoutError):
-            raise WeixinError("api_timeout") from None
-        except Exception:
-            raise WeixinError("api_network_error") from None
-
-    def begin_login(self):
-        result = self.request(BASE_URL, "/ilink/bot/get_bot_qrcode?bot_type=3", {"local_token_list": []})
-        if not all(isinstance(result.get(k), str) and 0 < len(result[k]) < 8192 for k in ("qrcode", "qrcode_img_content")):
-            raise WeixinError("invalid_login_response")
-        return {"qrcode": result["qrcode"], "display": result["qrcode_img_content"], "base": BASE_URL,
-                "started_at": self.clock()}
-
-    def poll_login(self, login, verification_code=None):
-        if self.clock() - login["started_at"] > 300:
-            return {"status": "expired"}
-        query = {"qrcode": login["qrcode"]}
-        if verification_code:
-            query["verify_code"] = verification_code
-        return self.request(login["base"], "/ilink/bot/get_qrcode_status?" + urlencode(query), timeout=40)
-
-    def poll(self, account):
-        return self.request(account["base_url"], "/ilink/bot/getupdates", {"get_updates_buf": account["cursor"]},
-                            account["token"], timeout=40)
-
-    def send(self, account, peer, text, client_id, context_token):
-        return self.send_items(account, peer, [{"type": 1, "text_item": {"text": text}}], client_id, context_token)
-
-    def get_upload_url(self, account, payload):
-        return self.request(account["base_url"], "/ilink/bot/getuploadurl", payload, account["token"])
-
-    def send_items(self, account, peer, items, client_id, context_token):
-        return self.request(account["base_url"], "/ilink/bot/sendmessage", {"msg": {
-            "from_user_id": "", "to_user_id": peer, "client_id": client_id, "message_type": 2,
-            "message_state": 2, "context_token": context_token,
-            "item_list": items}}, account["token"])
+    from weixin_protocol import (BASE_URL, CHANNEL_VERSION, MESSAGE_EVENT,
+                                WeixinError, IlinkClient, encoded, api_base,
+                                public_ip, parse_api_json)
+    from weixin_inbound import (InboundCapture, describe_inbound, inbound_part_id,
+                               inbound_type_metadata, media_ingest_items,
+                               MAX_INBOUND_TEXT_BYTES, MAX_INBOUND_ATTACHMENTS,
+                               MAX_INBOUND_MANIFEST_ITEMS, INBOUND_COMPLETENESS_VERSION)
+    from weixin_dispatch import OutboundDispatcher
+    from quotes import server_message_id
+    from fixed_commands import classify as classify_fixed_command
+    from command_catalog import is_help_request
+    from command_presentation import render_help_menu
 
 
 class WeixinStore:
@@ -399,6 +103,11 @@ class WeixinStore:
                 (id,armed_at,binding_hash) VALUES(1,?,?)''',
                 (self.clock(), hashlib.sha256(encoded([bound[0]['id'], bound[0]['owner']]).encode()).hexdigest()))
         self.db.commit()
+
+        self._inbound = InboundCapture(probe, clock=lambda: self.clock(),
+                                       notify_sender=lambda: self.notify_sender())
+        self._dispatcher = OutboundDispatcher(self)
+
     def notify_sender(self):
         notify = getattr(self.probe, "notify_sender", None)
         if notify:
@@ -446,125 +155,12 @@ class WeixinStore:
         return dict(row) if row else None
 
     def ingest(self, account, response):
-        codes = (response.get("ret", 0), response.get("errcode", 0))
-        if any(x not in (0, None) for x in codes):
-            raise WeixinError("auth_required" if -14 in codes else "poll_rejected", next(x for x in codes if x not in (0, None)))
-        msgs = response.get("msgs", [])
-        if not isinstance(msgs, list) or len(msgs) > 1000:
-            raise WeixinError("invalid_update_batch")
-        added = 0
-        observed_ids = []
-        now = self.clock()
-        with self.lock, self.db:
-            fresh = getattr(self.probe, 'fresh_admission', None)
-            # Validate the entire raw batch before parsing any body or media.
-            # The normal historical timestamp fallback is not admission proof.
-            admissions = fresh.inspect_batch(account, msgs, now) if fresh is not None else None
-            for position, msg in enumerate(msgs):
-                admission = admissions[position] if admissions is not None else None
-                if fresh is not None and admission is None:
-                    continue
-                if (not isinstance(msg, dict) or msg.get("from_user_id") != account["owner"]
-                        or msg.get("group_id") or msg.get("room_id") or msg.get("message_type") != 1
-                        or msg.get("message_state") == 1 or msg.get("delete_time_ms")
-                        or msg.get("to_user_id") not in (None, "", account["id"])):
-                    continue
-                source = admission['source_id'] if admission is not None else msg.get("message_id") or msg.get("client_id")
-                if not isinstance(source, (str, int)) or isinstance(source, bool) or not source:
-                    continue
-                identity = (admission['identity'] if admission is not None else
-                            "wx_" + hashlib.sha256(encoded([account["id"], account["owner"], str(source)]).encode()).hexdigest()[:32])
-                created_ms = admission['source_ms'] if admission is not None else msg.get("create_time_ms")
-                if fresh is not None:
-                    fresh.validate_candidate_in_transaction(identity, str(source), created_ms)
-                items = msg.get("item_list", [])
-                content, has_media, manifest = describe_inbound(identity, items)
-                manifest['command_context_v1'] = capture_command_context(msg)
-                unsupported = manifest['issue_codes']
-                if admission is None:
-                    created_ms = created_ms if isinstance(created_ms, (float, int)) and 0 < created_ms <= (now + 300) * 1000 else now * 1000
-                changed = self.db.execute("""INSERT OR IGNORE INTO weixin_inbox
-                    (id,account,peer,source_id,text,created_at,kind,unsupported,event_id)
-                    VALUES(?,?,?,?,?,?,?,?,NULL)""",
-                    (identity, account["id"], account["owner"], str(source), content, created_ms / 1000,
-                     "mixed" if content and has_media else "media" if has_media else "text" if content else "unsupported", encoded(unsupported))).rowcount
-                if not changed:
-                    continue
-                if fresh is not None:
-                    fresh.admit_in_transaction(identity, str(source), created_ms)
-                # The source inventory shares the inbox/cursor transaction.
-                # Duplicate retrievals preserve the first accepted source facts;
-                # legacy inputs without an inventory remain explicitly unknown.
-                self.db.execute('INSERT INTO weixin_inbound_manifests(message_id,metadata_json) VALUES(?,?)',
-                                (identity, encoded(manifest)))
-                self.db.execute('INSERT INTO weixin_quote_captures(message_id,metadata_json) VALUES(?,?)',
-                                (identity, encoded(capture_quotes(items))))
-                self.capture_quote_shape_once(identity, account, msg, items, content, manifest, now)
-                sid = server_message_id(msg.get('message_id'))
-                if sid is not None:
-                    self.db.execute('INSERT OR IGNORE INTO weixin_server_message_ids VALUES(?,?,?,?,?)',
-                                    (account['id'], account['owner'], 'incoming', identity, sid))
-                added += 1
-                observed_ids.append(identity)
-                self.probe.delivery_timing.ingested(identity, now)
-                self.probe.media.add(identity, account["id"], account["owner"], media_ingest_items(items))
-                context = msg.get("context_token")
-                if isinstance(context, str) and 0 < len(context) <= 16384:
-                    old = self.db.execute("SELECT source_ms FROM weixin_peers WHERE account=? AND peer=?", (account["id"], account["owner"])).fetchone()
-                    if not old or created_ms >= old["source_ms"]:
-                        self.db.execute("INSERT OR REPLACE INTO weixin_peers VALUES(?,?,?,?,?)", (account["id"], account["owner"], context, created_ms, now))
-                        if fresh is not None:
-                            fresh.record_context_in_transaction(identity, context, created_ms)
-                        if fresh is None:
-                            self.db.execute("UPDATE weixin_outbox SET status='queued',next_at=0 WHERE account=? AND peer=? AND status='context_required' AND attempts<3",
-                                            (account["id"], account["owner"]))
-                        else:
-                            held = self.db.execute("SELECT message_id,source_message_id FROM weixin_outbox WHERE account=? AND peer=? AND status='context_required' AND attempts<3",
-                                                   (account['id'], account['owner'])).fetchall()
-                            for outgoing in held:
-                                if fresh.allows_source(outgoing['source_message_id']):
-                                    self.db.execute("UPDATE weixin_outbox SET status='queued',next_at=0 WHERE message_id=? AND status='context_required' AND attempts<3",
-                                                    (outgoing['message_id'],))
-                self.probe.receipts.observe_new_in_transaction(identity)
-            cursor = response.get("get_updates_buf")
-            self.db.execute("UPDATE weixin_accounts SET cursor=CASE WHEN ?!='' THEN ? ELSE cursor END,last_poll=?,last_error=NULL WHERE id=?",
-                            (cursor if isinstance(cursor, str) else "", cursor if isinstance(cursor, str) else "", now, account["id"]))
-        if added:
-            # Cursor, owner context, inbox and media references are already
-            # committed. Timestamp failure must not undo successful ingestion.
-            try:
-                self.probe.delivery_timing.committed(observed_ids, self.clock())
-            finally:
-                self.notify_sender()
-                self.probe.notify_events()
-        return added
+        # Keep the public parser injection point used by existing integrations.
+        # The receiver still applies admission checks before invoking it.
+        return self._inbound.ingest(account, response, describe=describe_inbound)
 
     def capture_quote_shape_once(self, identity, account, msg, items, content, manifest, now):
-        """Called only after a newly inserted, authenticated owner inbox row.
-
-        Shape evidence is private diagnostics, never quote matching evidence.
-        No reads of old messages, sends, downloads or arbitrary field traversal.
-        """
-        if (content != '引用验收B20261026' or manifest.get('complete') is not True
-                or not isinstance(items, list) or len(items) != 1
-                or not isinstance(items[0], dict) or type(items[0].get('type')) is not int
-                or items[0]['type'] != 1 or 'ref_msg' not in items[0]
-                or not isinstance(items[0].get('text_item'), dict)
-                or items[0]['text_item'].get('text') != '引用验收B20261026'
-                or msg.get('message_state') != 2):
-            return
-        scope = hashlib.sha256(encoded([account['id'], account['owner']]).encode()).hexdigest()
-        state = self.db.execute('SELECT * FROM weixin_quote_shape_once WHERE id=1').fetchone()
-        source_ms = msg.get('create_time_ms')
-        if (state is None or state['message_id'] is not None or state['binding_hash'] != scope
-                or type(source_ms) not in (int, float)
-                or not state['armed_at'] * 1000 <= source_ms <= now * 1000):
-            return
-        shape = quote_shape(items[0]['ref_msg'])
-        self.db.execute('''UPDATE weixin_quote_shape_once
-            SET message_id=?,shape_json=?,captured_at=?
-            WHERE id=1 AND message_id IS NULL AND binding_hash=?''',
-            (identity, encoded(shape), now, scope))
+        return self._inbound.capture_quote_shape_once(identity, account, msg, items, content, manifest, now)
 
     def inbound_completeness(self, message_id):
         """Read sanitized captured-input facts; absence never means complete."""
@@ -686,7 +282,7 @@ class WeixinStore:
     def help_menu(self, row, capture, quotes):
         # No dispatcher or send occurs here. Only the existing owner handler may
         # turn this suggestion into its ordinary idempotent final reply.
-        if (row['text'].strip() != '/help' or row['kind'] != 'text'
+        if (not is_help_request(row['text']) or row['kind'] != 'text'
                 or capture.get('complete') is not True or capture.get('command_context_v1') is not True
                 or quotes.get('status') != 'none'
                 or quotes.get('recorded') is not True or quotes.get('complete') is not True):
@@ -697,20 +293,7 @@ class WeixinStore:
                       'dot镜像仅按已批准范围运行。')
         except (AttributeError, KeyError, WeixinError):
             mirror = 'dot自动镜像状态尚未核实。'
-        text = ('🤖 微信助手 · 使用指南\n\n'
-                '💬 直接说需求\n'
-                '查资料、整理任务、分析内容。\n\n'
-                '🖼️ 图片 / 📄 文件 / 🎬 视频\n'
-                '发来时说一句：希望我做什么。\n'
-                '文件≤20 MiB；超长图建议在dot上传。\n\n'
-                '↩️ 接着聊\n'
-                '可引用消息补充，识别不全时贴上关键文字。\n\n'
-                '⏳ 查看进度\n'
-                '直接问“进度怎么样”；没收到先查，不盲目重发。\n\n'
-                '🔒 仅本人私聊\n'
-                '不支持群聊；' + mirror + '\n\n'
-                '📊 额度：查询当前 Codex 周额度\n\n'
-                '❔ 再看帮助：/help')
+        text = render_help_menu(mirror=mirror)
         return {'command': '/help', 'matched': True, 'text': text,
                 'reply_via': 'existing_idempotent_final', 'automatic_send': False,
                 'owner_intent_verification_required': True,
@@ -823,14 +406,7 @@ class WeixinStore:
             raise WeixinError("send_queue_busy")
 
     def _pending_receipt(self, fresh):
-        if not self.probe.receipts.pending_receipt():
-            return False
-        if fresh is None:
-            return True
-        # Historical receipt intents must not stall a newly admitted attachment.
-        waiting = self.db.execute("SELECT message_id FROM owner_receipt_intents WHERE activation_id=? AND state='waiting' AND decision NOT IN ('queue_full','uncertain_source')",
-                                  (self.probe.receipts.activation_id,))
-        return any(fresh.allows_source(row['message_id']) for row in waiting)
+        return self._dispatcher.pending_receipt(fresh)
 
     def send_status(self, message_id):
         account = self.account()
@@ -889,203 +465,7 @@ class WeixinStore:
                             (self.clock(), message_id))
 
     def send_once(self):
-        account = self.account()
-        if not account or account["status"] != "ready":
-            return False
-        fresh = getattr(self.probe, 'fresh_admission', None)
-        if fresh is not None:
-            fresh.require_ready()
-        now = self.clock()
-        with self.lock, self.db:
-            # Waiting finals do not monopolize the queue. Only their own ack
-            # blocks them, including its bounded backoff/context/auth wait.
-            # An uncertain ack is never resent; the independent final may proceed.
-            rows = self.db.execute("""SELECT outgoing.* FROM weixin_outbox outgoing
-                WHERE outgoing.status='queued' AND outgoing.next_at<=? AND outgoing.account=?
-                AND NOT (outgoing.kind='reply' AND EXISTS (
-                    SELECT 1 FROM weixin_outbox ack WHERE ack.source_message_id=outgoing.message_id
-                    AND ack.kind='reply_ack' AND ack.status IN ('queued','preparing','sending','context_required','auth_required')))
-                ORDER BY CASE
-                    WHEN outgoing.kind='reply_ack' AND outgoing.ack_origin='system_receipt' THEN 0
-                    WHEN outgoing.kind IN ('reply','reply_ack') AND outgoing.upload_id IS NULL THEN 1
-                    ELSE 2 END,outgoing.created_at,outgoing.rowid""", (now, account["id"]))
-            row = next((item for item in rows
-                        if (fresh is None or item['kind'] != 'notification' and fresh.allows_source(item['source_message_id']))
-                        and (item['kind'] != 'notification' or
-                             not self.aihot_hold_all_notifications and item['message_id'] not in self.aihot_held_notification_ids)), None)
-            if not row:
-                return False
-            if fresh is not None:
-                fresh.require_source(row['source_message_id'])
-            if row['attempts'] >= 3:
-                self.db.execute("UPDATE weixin_outbox SET status='rejected',error_kind='retry_limit' WHERE message_id=?", (row['message_id'],))
-                return True
-            if row['peer'] != account['owner']:
-                self.db.execute("UPDATE weixin_outbox SET status='rejected',error_kind='owner_identity_mismatch' WHERE message_id=?", (row['message_id'],))
-                return True
-            context = self.db.execute("SELECT token,received_at FROM weixin_peers WHERE account=? AND peer=?", (account["id"], row["peer"])).fetchone()
-            if not context:
-                self.db.execute("UPDATE weixin_outbox SET status='context_required',error_kind='fresh_inbound_required' WHERE message_id=?", (row["message_id"],))
-                return True
-            if fresh is not None:
-                fresh.require_context(context)
-            if row['upload_id'] and not row['item_json'] and self._pending_receipt(fresh):
-                return False
-            if row['upload_id'] and not row['item_json']:
-                self.db.execute("UPDATE weixin_outbox SET status='preparing' WHERE message_id=?", (row['message_id'],))
-        if row['upload_id'] and not row['item_json']:
-            try:
-                item = self.probe.outbound.prepare(row['upload_id'], account)
-                with self.lock, self.db:
-                    self.db.execute("UPDATE weixin_outbox SET item_json=?,status='queued',error_kind=NULL WHERE message_id=?", (encoded(item), row['message_id']))
-            except Exception as exc:
-                kind = exc.kind if isinstance(exc, WeixinError) else 'media_upload_error'
-                with self.lock, self.db:
-                    upload = self.db.execute('SELECT upload_attempts FROM weixin_uploads WHERE id=?', (row['upload_id'],)).fetchone()
-                    retry = upload['upload_attempts'] < 3 and (kind in ('media_upload_timeout','media_upload_network_error','api_timeout','api_network_error') or
-                        (kind in ('media_upload_http_error','api_http_error') and isinstance(exc,WeixinError) and type(exc.code) is int and exc.code >= 500))
-                    state = 'auth_required' if kind == 'auth_required' else 'queued' if retry else 'rejected'
-                    self.db.execute("UPDATE weixin_outbox SET status=?,error_kind=?,next_at=? WHERE message_id=?", (state,kind,self.clock()+5*upload['upload_attempts'],row['message_id']))
-                    if state == 'auth_required':
-                        self.db.execute("UPDATE weixin_accounts SET status='auth_required',last_error='bot_auth_expired' WHERE id=?", (account['id'],))
-                return True
-        # CDN preparation may take time. Re-read identity, expiry and the latest
-        # peer context immediately before committing a message POST.
-        account = self.account()
-        with self.lock, self.db:
-            self.db.execute('BEGIN IMMEDIATE')
-            row = self.db.execute('SELECT * FROM weixin_outbox WHERE message_id=?', (row['message_id'],)).fetchone()
-            if not account or account['status'] != 'ready' or row['status'] != 'queued':
-                return True
-            if fresh is not None:
-                fresh.require_source(row['source_message_id'])
-                if row['account'] != account['id'] or row['peer'] != account['owner']:
-                    raise WeixinError('fresh_source_owner_mismatch')
-            if row['kind'] == 'notification' and (self.aihot_hold_all_notifications or row['message_id'] in self.aihot_held_notification_ids):
-                return False
-            if row['upload_id']:
-                try:
-                    self.probe.outbound.authorized(row['upload_id'])
-                    self.read_message(row['source_message_id'])
-                except WeixinError as exc:
-                    self.db.execute("UPDATE weixin_outbox SET status='rejected',error_kind=?,item_json=NULL WHERE message_id=?", (exc.kind,row['message_id']))
-                    return True
-            context = self.db.execute("SELECT token,received_at FROM weixin_peers WHERE account=? AND peer=?", (account['id'],row['peer'])).fetchone()
-            if not context:
-                self.db.execute("UPDATE weixin_outbox SET status='context_required',error_kind='fresh_inbound_required' WHERE message_id=?", (row['message_id'],))
-                return True
-            if fresh is not None:
-                fresh.require_context(context)
-            changed = self.db.execute("UPDATE weixin_outbox SET status='sending',attempts=attempts+1,context_at=?,post_started_at=? WHERE message_id=? AND status='queued' AND attempts=?",
-                                      (context["received_at"], self.clock(), row["message_id"], row['attempts'])).rowcount
-            if changed != 1:
-                return True
-        outcome, kind, code = "delivery_unknown", "uncertain_api_result", None
-        diagnostic = {"response_received": False}
-        response_server_id = None
-        post_attempted = False
-        try:
-            with self.lock if fresh is not None else nullcontext():
-                if fresh is not None:
-                    if fresh is not getattr(self.probe, 'fresh_admission', None):
-                        raise WeixinError('fresh_policy_changed_before_post')
-                    fresh.require_source(row['source_message_id'])
-                    fresh.require_context(context)
-                post_attempted = True
-                if row['upload_id']:
-                    result = self.client.send_items(account, row['peer'], [json.loads(row['item_json'])], row['client_id'], context['token'])
-                else:
-                    result = self.client.send(account, row["peer"], row["text"], row["client_id"], context["token"])
-            if not isinstance(result, dict):
-                raise WeixinError("invalid_api_response")
-            codes = (result.get("ret"), result.get("errcode"))
-            # The official API defines ret as optional; a successful HTTP JSON
-            # object with omitted/null/zero codes is accepted, including {}.
-            # Keep only controlled structural evidence, never response bodies.
-            diagnostic = {"response_received": True, "valid_json_object": True, "empty_object": not result,
-                          "ret_present": "ret" in result, "errcode_present": "errcode" in result,
-                          "ret": codes[0] if type(codes[0]) is int else None,
-                          "errcode": codes[1] if type(codes[1]) is int else None,
-                          "has_server_message_id": isinstance(result.get("message_id"), (str, int)) and not isinstance(result.get("message_id"), bool),
-                          "unexpected_base_resp": "base_resp" in result}
-            if any(x is not None and type(x) is not int for x in codes):
-                kind = "invalid_send_status_type"
-            elif -2 in codes and any(x not in (0, None, -2) for x in codes):
-                # A mixed explicit failure must not be hidden by a generic -2.
-                # Preserve the original commitment and stop this send.
-                outcome, kind = "rejected", "send_rejected"
-                code = next(x for x in codes if x not in (0, None, -2))
-            elif -14 in codes:
-                outcome, kind, code = "auth_required", "bot_auth_expired", -14
-            elif -2 in codes:
-                code = -2
-                error = str(result.get("errmsg") or result.get("msg") or "").lower()
-                if error in ("prepare failed", "unknown error"):
-                    outcome, kind = ("context_required", "fresh_inbound_required") if row["attempts"] + 1 < 3 else ("rejected", "retry_limit")
-                elif error in ("rate limit", "rate limited"):
-                    outcome, kind = ("queued", "rate_limited") if row["attempts"] + 1 < 3 else ("rejected", "retry_limit")
-                else:
-                    # Project retry policy is deliberately narrower than all
-                    # possible upstream -2 causes. Unknown text grants no retry.
-                    outcome, kind = "rejected", "send_rejected"
-            elif any(x not in (0, None) for x in codes):
-                outcome, kind = "rejected", "send_rejected"
-                code = next((x for x in codes if type(x) is int and x != 0), None)
-            elif "base_resp" in result:
-                kind = "unexpected_send_response_shape"
-            else:
-                outcome, kind = "accepted", None
-                diagnostic["acceptance_basis"] = "explicit_zero" if 0 in codes else "omitted_success_codes"
-                response_server_id = server_message_id(result.get('message_id'))
-        except WeixinError as error:
-            known = {"api_timeout", "api_network_error", "api_http_error", "invalid_api_json", "invalid_api_response",
-                     "api_response_too_large", "invalid_api_destination", "non_public_api_address", "invalid_api_endpoint"}
-            kind = error.kind if error.kind in known else "unexpected_send_error"
-            diagnostic = {"response_received": False, "failure_kind": kind}
-            if not post_attempted and fresh is not None:
-                # The committed slot remains terminal: no API invocation took
-                # place, and a later policy change must not replay this slot.
-                outcome, kind = 'rejected', 'fresh_prepost_gate_failed'
-                diagnostic = {"response_received": False, "post_attempted": False,
-                              "failure_kind": kind}
-            if error.kind == "api_http_error" and type(error.code) is int:
-                # An HTTP response is evidence, not proof of message acceptance.
-                # Keep delivery_unknown and the existing no-resend behavior.
-                diagnostic["response_received"] = True
-                diagnostic["http_status"] = error.code
-        except Exception:
-            # Timeout/network errors after POST may have delivered; never blindly resend.
-            kind = "unexpected_send_error"
-            diagnostic = {"response_received": False, "failure_kind": kind}
-            if not post_attempted and fresh is not None:
-                outcome, kind = 'rejected', 'fresh_prepost_gate_failed'
-                diagnostic = {"response_received": False, "post_attempted": False,
-                              "failure_kind": kind}
-        if fresh is not None and outcome in ('queued', 'context_required', 'auth_required'):
-            # This mode has no retained history to authorize replay of a
-            # refused commitment. Keep its original slot terminal even when
-            # the provider suggests a recoverable auth/context/rate condition.
-            outcome, kind = 'rejected', 'fresh_send_rejected'
-        if row['ack_origin'] == 'system_receipt' and outcome in ('queued','context_required','auth_required'):
-            outcome, kind = 'rejected', 'system_receipt_post_rejected'
-        with self.lock, self.db:
-            if fresh is not None and not post_attempted:
-                self.db.execute('UPDATE weixin_outbox SET attempts=?,post_started_at=NULL WHERE message_id=?',
-                                (row['attempts'], row['message_id']))
-            if outcome == "context_required":
-                latest = self.db.execute("SELECT received_at FROM weixin_peers WHERE account=? AND peer=?", (account["id"], row["peer"])).fetchone()
-                if latest and latest["received_at"] > context["received_at"] and row["attempts"] + 1 < 3:
-                    outcome, kind = "queued", "fresh_context_available"
-            self.db.execute("UPDATE weixin_outbox SET status=?,error_kind=?,server_code=?,accepted_at=?,next_at=?,api_result=? WHERE message_id=?",
-                            (outcome, kind, code, self.clock() if outcome == "accepted" else None, now + 5 * (row["attempts"] + 1), encoded(diagnostic), row["message_id"]))
-            if outcome == 'accepted' and response_server_id is not None:
-                self.db.execute('INSERT OR IGNORE INTO weixin_server_message_ids VALUES(?,?,?,?,?)',
-                                (account['id'], row['peer'], 'outgoing', row['message_id'], response_server_id))
-            if outcome == "auth_required" or code == -14:
-                self.db.execute("UPDATE weixin_accounts SET status='auth_required',last_error='bot_auth_expired' WHERE id=?", (account["id"],))
-            if row['upload_id'] and outcome in ('accepted','rejected','delivery_unknown'):
-                self.db.execute('UPDATE weixin_outbox SET item_json=NULL WHERE message_id=?', (row['message_id'],))
-        return True
+        return self._dispatcher.send_once()
 
     def poll_once(self):
         account = self.account()

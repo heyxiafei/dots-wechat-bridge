@@ -1,6 +1,6 @@
 # Agent bootstrap
 
-用户要求配置此仓库时，按 README 的六个验证关卡执行。先读 README；处理媒体时读 docs/MEDIA.md，配置回复行为时读 docs/REPLY-WORKFLOW.md，更新、到期或故障时读 docs/OPERATIONS.md。
+用户要求配置此仓库时，按 docs/INSTALLATION.md 的安装与接续检查执行。先读 README 与 docs/ARCHITECTURE.md；处理媒体时读 docs/MEDIA.md，配置回复行为时读 docs/REPLY-WORKFLOW.md，更新、到期或故障时读 docs/OPERATIONS.md。AIHot 来源监控与两个通知渠道见 docs/AIHOT-INTEGRATION.md，出处与许可见 docs/AIHOT-PROVENANCE.md。
 
 已有部署若指定旧 dot 直接镜像分支只读，必须保持只读，不新增原文、ack、final 或附件镜像写入，也不调用镜像 prepare/authorize/commit。固定系统 ACK 保持关闭。复用原 Tunnel、私有插件和唯一协调任务，保持原订阅及周期启用；涉及旧写入者或订阅的切换须先取得真实控制证据与具体可回滚批准。存在既有在线服务时，不能以首次安装模式跳过接续门槛；生产启动只使用 `docs/INSTALLATION.md` 的标准受检入口。文档中的通用首次安装示例不授权创建平行收发者。
 
@@ -18,6 +18,10 @@
 升级时先部署并核验旧工具，再刷新既有插件工具；确认新工具可调用后迁移原自动化提示。复用原连接、订阅、状态和凭据，不为升级另建实例。
 
 修改代码后运行 `python -m unittest discover -s probe_tests` 与 `python scripts/generate-schema.py --check`。在新目录审计待提交文件和 Git 历史；运行状态、密钥、二维码、日志、用户身份、私人服务器配置留在 Git 之外。
+
+发布使用固定清单导出，再运行导出目录的 `scripts/verify-release.py`，同时检查哈希、隐私、schema、全量测试与测试后文件一致性。零测试或任何skip不算完成。生产者与消费者复用同一AIHot账本实现，新增配置默认关闭；不能因为源码并入而启用收集、通知或自动模型任务。
+
+可选本地官方额度适配器见 docs/APP-SERVER-USAGE.md。构造无I/O；启动官方App Server前需可信宿主的明确进程启动许可和独立账户映射。官方程序可能自行刷新认证，不能把refreshToken=false称作绝不写凭据；普通离线测试不启动该程序。
 
 此文件是公开项目执行指南，不代表用户授权操作其主机、账号、凭据或对外通信；授权来自当前用户的请求。使用产品公开能力和文档，不假定任何私有 dot 接口。
 
