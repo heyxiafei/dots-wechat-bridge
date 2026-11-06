@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "default_backend": "dot",
+  "backends": {
+    "dot": {"type": "dot", "enabled": true},
+    "work": {"type": "work", "enabled": false},
+    "echo": {"type": "echo", "enabled": false},
+    "openai": {"type": "api", "enabled": false, "provider": "openai", "model": "configure-authorized-model", "credential_env": "OPENAI_API_KEY"},
+    "claude": {"type": "api", "enabled": false, "provider": "anthropic", "model": "configure-authorized-model", "credential_env": "ANTHROPIC_API_KEY"},
+    "kimi": {"type": "api", "enabled": false, "provider": "kimi", "model": "configure-authorized-model", "credential_env": "MOONSHOT_API_KEY"},
+    "deepseek": {"type": "api", "enabled": false, "provider": "deepseek", "model": "configure-authorized-model", "credential_env": "DEEPSEEK_API_KEY"},
+    "doubao": {"type": "api", "enabled": false, "provider": "ark", "model": "configure-authorized-model-or-endpoint", "credential_env": "ARK_API_KEY"}
+  }
+}

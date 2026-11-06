@@ -1,0 +1,111 @@
+{
+  "repository": "https://github.com/zhayujie/CowAgent",
+  "ref": "19e84350d6c5459133fc7d0c573d1b6600e55ff7",
+  "read_date": "2026-11-06",
+  "license": "MIT",
+  "files": [
+    {
+      "path": "LICENSE",
+      "git_blob_sha": "fd03f7c24a514e138467c303e3641a49811bc9c9",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/LICENSE",
+      "source_sha256": "d72f9e8cfa805e7dd9edc73dda0cb150a715f4eb5b439ed597664639ffbf5dfc"
+    },
+    {
+      "path": "channel/weixin/weixin_api.py",
+      "git_blob_sha": "a2f7814288bc29b8b521b039575ced18b7f65581",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/channel/weixin/weixin_api.py",
+      "source_sha256": "55db5350b4d610bb55f49de05213dded7d68371eac81bd1312a32786575d8370",
+      "extracted_functions": [
+        {
+          "name": "_aes_ecb_padded_size",
+          "start_line": 399,
+          "end_line": 401,
+          "reference_source_sha256": "c3e275a004980b8808137b26111c9b17bf77b2c952385ee191bea95edaf086d4"
+        }
+      ]
+    },
+    {
+      "path": "channel/weixin/weixin_message.py",
+      "git_blob_sha": "f961f4cbba700f47a82adb62e76cd96226adcc84",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/channel/weixin/weixin_message.py",
+      "source_sha256": "e097319c486df2c19da3ef852d1e55d1528ff1642af9cdf517f0cc8a8f44909c"
+    },
+    {
+      "path": "channel/weixin/weixin_channel.py",
+      "git_blob_sha": "63e598365e647bb077cfa03ab127d5a243aa49b5",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/channel/weixin/weixin_channel.py",
+      "source_sha256": "8ed72cd537c69d537988ca4e3fdf1092ed85bd9ea61f3f9e6a23a2272ca50fee",
+      "extracted_functions": [
+        {
+          "name": "_split_text",
+          "start_line": 1091,
+          "end_line": 1107,
+          "reference_source_sha256": "3c8be9102b69c808d8b5c4ff5008f82b07a3d86292f7913d36cb2926bc997c2f"
+        }
+      ]
+    },
+    {
+      "path": "docs/channels/weixin.mdx",
+      "git_blob_sha": "f3e27c230894abee0d36d7198ce315ef5f47eaa6",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/docs/channels/weixin.mdx",
+      "source_sha256": "f8f949a7eef4b91b4a68022f8d421cdfa25115cc0432ce87871b3c958381b522"
+    },
+    {
+      "path": "channel/chat_channel.py",
+      "git_blob_sha": "36dbd0b9a3da05ef58e5f2551a75be60bff93897",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/channel/chat_channel.py",
+      "source_sha256": "7905f4846a7002695c59e7941c57d8a6f8e70674dc1aa28d14414685e6460198"
+    },
+    {
+      "path": "channel/chat_message.py",
+      "git_blob_sha": "8e72643b94ea0a8cfbe89753b967c91e9db5808b",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/channel/chat_message.py",
+      "source_sha256": "ee29b03cb3ed08e788329f2042fcc38e81c41b3dfca420238281cb09189fa486"
+    },
+    {
+      "path": "common/expired_dict.py",
+      "git_blob_sha": "8e12e49ca4fd1bda89095846213a2cb3a7e7a560",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/common/expired_dict.py",
+      "source_sha256": "344a2a6c9b1544acf8fa18ccf968f242ddde8d281b75f83018f737bad1d7eb31"
+    },
+    {
+      "path": "common/state_dir.py",
+      "git_blob_sha": "ff2756e479f7184ca4411df4cced8b08d909bc51",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/common/state_dir.py",
+      "source_sha256": "967861f0f1d3f7e24481c8ad1477bece4af1972d0f6721501cbd2e3ea337ef06"
+    },
+    {
+      "path": "common/media_download.py",
+      "git_blob_sha": "ef94e6bc19a407ff68c2f5a7dcfb8b3f01ab136b",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/common/media_download.py",
+      "source_sha256": "1ad62e6a3494b30795d7a8f8dd31554d44793266cb72d59b644d78f22081690e"
+    },
+    {
+      "path": "bridge/context.py",
+      "git_blob_sha": "20cbe99ba6c92a0e81eeb67f1c9984a294a8b7c2",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/bridge/context.py",
+      "source_sha256": "5a301b81b8a0778d4c9924535e0c667832adad3614109f4ddd7146c4d61842ba"
+    },
+    {
+      "path": "bridge/reply.py",
+      "git_blob_sha": "f2293bdfb9fe33713a53db7cb4de2402850a9e00",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/bridge/reply.py",
+      "source_sha256": "cfe8f6b51cfa858be48272e8581afd6fd7aace6e7d649cd1ef20c29d0d2c997a"
+    },
+    {
+      "path": "requirements.txt",
+      "git_blob_sha": "40ecfe1a423278a7098da27bd6a184f79f7b499a",
+      "url": "https://github.com/zhayujie/CowAgent/blob/19e84350d6c5459133fc7d0c573d1b6600e55ff7/requirements.txt",
+      "source_sha256": "f3c0eb31b8c45246af68a9edaa15c880ad7f2631f4f0cdb46287ce710a8a6205"
+    }
+  ],
+  "copyright": "Copyright (c) 2022 zhayujie",
+  "license_file": "licenses/CowAgent-MIT.txt",
+  "mode": "isolated pure-function extraction; no upstream module import",
+  "local_changes": [
+    "split_text: reject non-string text and nonpositive/noninteger limits before looping",
+    "aes_ecb_padded_size: reject negative/noninteger sizes",
+    "no network, retry, login, state, logging or Agent dependencies extracted"
+  ],
+  "sync_policy": "Compare pinned source blobs and extraction AST; review upstream delta before changing reference SHA. No automatic master sync."
+}

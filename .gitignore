@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 runtime/
 state/
+data/
+evidence/
+private/
 secrets/
 profiles/
 bin/
@@ -10,6 +13,7 @@ bin/
 *.key
 *.pem
 *.log
+*.jsonl
 .env*
 .DS_Store
 *.tgz

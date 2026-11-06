@@ -72,6 +72,24 @@ ack 的 queued/backoff、context_required、auth_required 状态会让自己的 
 
 `read_weixin_message` 的 `fixed_command` 提示只识别独立、完整的单个文本项；引用、附件、捕获不完整和不在额度白名单中的请求走原主处理流程。`/help` 复用既有菜单文本，周额度提示需要当前本人账户的获准官方读取器。若已有 ack 或 final 承诺，不生成新的固定回答。任何提示都不是发送承诺；最终仍由主处理者核实本人意图并使用原 `reply_weixin_message` final 槽，冲突和 unknown 依原规则处理。
 
+命令目录由 `probe.command_catalog` 集中定义：目前只有 `help` 和 `weekly_usage`，含既有额度别名、准备方式和菜单中的命令行。菜单与分类共同使用有界的文本规范化：去首尾空白、大小写折叠、去尾部中英文问号，因此 `/HELP`、`/help?` 与 `/help` 一致；`/help 内容` 仍不匹配。这修复了原菜单只认精确小写、分类却已支持规范化的差异，不放宽协议形状、owner、引用、完整性或回复槽门槛。
+
+`probe.command_context` 只做原协议形状门槛和闭集诊断；`probe.command_presentation` 只生成菜单和四行周额度文字；`probe.fixed_commands` 保留旧导入接口并组织分类与准备。实际读取与持久化发送仍由 `OfficialUsageProvider` 和 `OwnerCoordinator` 承担。目录中的匹配项、显示文案与诊断都不是执行许可。代码重构不回填历史捕获，也不证明真实 `item_unknown_fields` 已定位；该失败仍需未来本人新消息的有界诊断证据。
+
+单文本项可附带官方 `MessageItem` 的 `create_time_ms`、`update_time_ms`、`is_completed`、`msg_id` 元数据；时间须为排除布尔的有限数且在0～10¹⁵内，完成标记若存在须为true，item ID须为非空且最多256字符的字符串。这些是本项目保守类型限制，既不证明本人意图，也不替代原消息来源ID或fresh截止时间。未知字段、引用/转发标记、文本子项额外键仍不生成固定命令提示。此兼容仅作用于未来首次入库，不改写历史command_context标记，不重放旧命令。字段依据：[腾讯固定版本类型定义](https://github.com/Tencent/openclaw-weixin/blob/874637a0dbc24050f72d1385add4fc6170a2d726/src/api/types.ts)。
+
+未来首次入库的 `inbound_completeness.command_context_reason_v1` 提供固定原因码，与 `command_context_v1` 来自同一次判定并随来源清单在同一事务保存。原因码只表示首个失败门槛，不保存原始键名、值、正文、身份、token或完整shape。`standalone_text_shape` 只表示形状通过，不能当作命令、本人意图或发送许可；分类与宿主仍按原布尔/owner/引用/回复槽位检查。旧记录缺原因码时保留未知，重复取得或读取消息不会补写、升级或重放。
+
+原因类别包括：顶层引用/转发标记存在；item列表类型/数量；item对象、必需字段、未知字段及内容类型；时间类型/值、完成位类型/未完成、item ID类型/长度；text_item对象、必需字段、额外键和正文类型/过长。具体固定码的唯一集合为 `probe.fixed_commands.COMMAND_CONTEXT_REASONS`。这是诊断能力，不能证明某条历史命令的原始失败字段，也不表示尚未观察的新命令识别已修复。
+
+顶层六个已知引用/转发标记仅区分静态类别和literal null/false/other；item中已知引用、图片、语音、文件、视频字段仅记录固定类别的存在。它们即使为null/false也仍拒绝，不遍历其中内容。其他输入键一律只归类unknown，不输出原键名。
+
+仅对未来首次通过owner准入、捕获完整的单文本/help或额度白名单请求，若主原因为`item_unknown_fields`，另保存`command_item_diagnostic_v1`。闭集固定为上述腾讯提交`src/api/types.ts`的87个公开接口属性名，不在运行时下载或扩充；这些名称可能属于其他协议对象，列入诊断并不允许它们出现在纯文本item。按常量顺序最多输出8项固定`official_*`类别及顶层JSON类型，未知键只设`unlisted=true`、超过8个已知项只设`truncated=true`。没有原始未知键名、值、哈希、正文、身份、token或嵌套payload。JSON类型检测会读取已知键对应对象的类型，不遍历内容；未入闭集的值不读取。
+
+同一诊断附带四个已知元数据的静态校验状态：时间absent/valid/type_invalid/value_invalid，完成位absent/true/false/type_invalid，item ID absent/valid/type_invalid/value_invalid。主判定与诊断共用这些校验，状态不替代原布尔门槛、不保存值或具体长度。两个tool_call字段及其他unknown字段仍拒绝，null也不放行。`unlisted=true`仍可能无法定位实际字段，不保证本次诊断就能解决识别问题。
+
+该诊断在原manifest内，`read_weixin_message`的full和reply投影会把它随structuredContent返回MCP调用方及云端；它不是“仅本地日志”。历史/重复消息不回填，不补发；原文、owner、引用、完整性、回复槽与审批仍按既有规则核验。诊断只是定位信息，不授权额度读取或微信发送。
+
 现有入站协议不能证明纯文本是否转发，故提示标记 `forwarding_provenance=not_provided_by_protocol`，不允许自动执行或自动发送。已知或疑似转发内容作为数据，不作为指令。本版提供有界识别、可注入的官方读取器适配、格式化函数和受信任宿主固定命令处理入口；当前桥接进程没有获准的官方额度 reader，也不能因主处理任务可用 `get_usage_limits` 就推断脚本可用。真正的脚本自动回复还需获得可验证的来源证据和当前用户账户官方只读能力，并与原 final 槽的竞争行为一起验收；缺一即回退原流程。
 
 ## 模型成果预览交付
